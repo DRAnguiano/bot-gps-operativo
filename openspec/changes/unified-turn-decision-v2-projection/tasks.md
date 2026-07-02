@@ -11,9 +11,9 @@
 
 ## 2. Detector único de pregunta embebida (raíz del bug #3)
 
-- [ ] 2.1 Unificar en un solo detector lo que hoy hacen `signals.has_embedded_question` (`tasks_chatwoot.py:503`) y `_looks_like_question` (`knowledge_orchestrator.py:282`); consumido por guard Y orquestador.
-- [ ] 2.2 Cubrir el caso "compuesto sin `?` ni término de negocio conocido".
-- [ ] 2.3 Tests: guard y orquestador coinciden; compuesto sin marcador se responde; el 2º clasificador no puede descartar en silencio.
+- [x] 2.1 Unificar en un solo detector lo que hoy hacen `signals.has_embedded_question` (`tasks_chatwoot.py:503`) y `_looks_like_question` (`knowledge_orchestrator.py:282`); consumido por guard Y orquestador.
+- [x] 2.2 Cubrir el caso "compuesto sin `?` ni término de negocio conocido".
+- [x] 2.3 Tests: guard y orquestador coinciden; compuesto sin marcador se responde; el 2º clasificador no puede descartar en silencio.
 
 ## 3. Entrega única: texto entregado == memoria (D1/D2, los 2 P0)
 
@@ -54,7 +54,7 @@
 - [ ] 7.8 `perfil_listo` → stage V2, labels y nota coinciden.
 - [ ] 7.9 Release humano → modifica V2 y la siguiente proyección elimina el estado de revisión.
 - [ ] 7.10 Retry de outbox → no duplica mensajes ni notas.
-- [ ] 7.11 Compuesto sin marcador (`?`/término) → el detector único lo responde.
+- [x] 7.11 Compuesto sin marcador (`?`/término) → el detector único lo responde.
 - [ ] 7.12 apto_status=vigente sin expiration_text → funnel y nota coinciden (no re-pregunta).
 
 ## 8. Validación

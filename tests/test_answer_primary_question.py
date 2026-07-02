@@ -16,20 +16,62 @@ import app.knowledge.intent_orchestrator as IO
 import app.orchestrators.knowledge_orchestrator as KO
 
 
-def _patch_pipeline(monkeypatch, *, questions, answer, derive=False):
+def _patch_pipeline(monkeypatch, *, questions, answer, derive=False, enriched=None):
     monkeypatch.setattr(
         IC, "classify_message", lambda msg, last_bot_question=None: {"questions": questions}
     )
-    monkeypatch.setattr(IE, "enrich_classification", lambda c: {"questions": questions})
-    monkeypatch.setattr(IO, "_generate_rag_answer", lambda q, msg: (answer, derive))
+    monkeypatch.setattr(
+        IE, "enrich_classification", lambda c: (enriched or {"questions": questions})
+    )
+
+    # Firma EXPLÍCITA (no *args/**kwargs) para conservar detección de futuros
+    # cambios de contrato de `_generate_rag_answer(question, message, facts=None)`.
+    def _mock_generate_rag_answer(q, msg, facts=None):
+        return answer, derive
+
+    monkeypatch.setattr(IO, "_generate_rag_answer", _mock_generate_rag_answer)
 
 
 # ── gate barato (no invoca el pipeline si no hay señal de pregunta) ────────────
+# Fase 2/D5: el gate ahora es el detector ÚNICO has_business_question (mismo que el
+# guard del worker), no el antiguo KO._looks_like_question (eliminado).
 
-def test_looks_like_question_detects_punctuation_and_business_terms():
-    assert KO._looks_like_question("tengo full, ¿qué rutas manejan?")
-    assert KO._looks_like_question("me dicen las rutas")          # término de negocio
-    assert not KO._looks_like_question("si, soy de Torreon y llevo tres anios")
+def test_has_business_question_detects_punctuation_and_business_terms():
+    from app.knowledge.current_turn import has_business_question
+
+    assert has_business_question("tengo full, ¿qué rutas manejan?")
+    assert has_business_question("me dicen las rutas")          # término de negocio
+    assert not has_business_question("si, soy de Torreon y llevo tres anios")
+
+
+def test_pipeline_delivers_facts_to_rag_generator(monkeypatch):
+    """Contrato Fase 5.2: `_resolve_embedded_question` pasa los facts (persistidos +
+    del turno) como 3er argumento a `_generate_rag_answer`. Captura el arg recibido."""
+    captured = {}
+
+    monkeypatch.setattr(
+        IC, "classify_message", lambda msg, last_bot_question=None: {"questions": []}
+    )
+    monkeypatch.setattr(
+        IE,
+        "enrich_classification",
+        lambda c: {"questions": [{"intent": "route_question", "requires_rag": True}]},
+    )
+
+    def _capturing(q, msg, facts=None):
+        captured["facts"] = facts
+        return "Rutas del corredor norte.", False
+
+    monkeypatch.setattr(IO, "_generate_rag_answer", _capturing)
+
+    lead_memory = {"facts": [{"fact_group": "license", "fact_key": "category", "fact_value": "E"}]}
+    out = KO._resolve_embedded_question(
+        "tengo licencia E, que rutas manejan?",
+        {"route": "profile", "requires_rag": False},
+        lead_memory,
+    )
+    assert out is not None
+    assert captured["facts"] == {"license.category": "E"}
 
 
 def test_gate_skips_pipeline_when_no_question_signal(monkeypatch):

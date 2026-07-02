@@ -259,6 +259,19 @@ _EMBEDDED_Q_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
+# Sustantivos-tema RAG-contestables (pago, rutas, documentos, licencia, apto…).
+# Origen ÚNICO: el orquestador reimporta desde aquí (evita dos listas divergentes).
+BUSINESS_QUESTION_TERMS: tuple[str, ...] = (
+    "pago", "pagan", "sueldo", "salario", "documento", "documentos", "papeles",
+    "requisitos", "licencia", "apto", "ruta", "rutas", "vacante", "vacantes",
+    "antidoping", "prueba", "orina", "base", "bases",
+)
+
+
+def _message_has_any(message: str | None, terms: tuple[str, ...]) -> bool:
+    text = normalize_text(message or "")
+    return any(normalize_text(term) in text for term in terms)
+
 _TOPIC_APTO = re.compile(r"\bapto\b", re.IGNORECASE)
 _TOPIC_LICENSE_VIGENTE = re.compile(
     r"\blicencia\b.{0,80}(?:\bvigente\b|\bvigencia\b|\bal\s+corriente\b)"
@@ -523,6 +536,35 @@ def has_embedded_business_question(message: str | None, turn_signals=None) -> bo
         return classify_turn_intent(message or "").has_embedded_question
     except Exception:
         return False
+
+
+def has_business_question(message: str | None, turn_signals=None) -> bool:
+    """Detector ÚNICO de pregunta de negocio contestable en el turno.
+
+    (unified-turn-decision-v2-projection, Fase 2 / D5 — raíz del bug #3.)
+
+    Superset de los tres mecanismos que antes decidían por separado y en
+    desacuerdo (auditoría):
+      1. `is_question` — signo `?`/`¿` y aperturas interrogativas.
+      2. sustantivos-tema (`BUSINESS_QUESTION_TERMS`) — lo que usaba el orquestador
+         (`_looks_like_question`).
+      3. `has_embedded_business_question` — señal LLM (`turn_signals`) + regex de
+         cantidad + fallback TIPC — lo que usaba el guard del worker.
+
+    Con esto, guard y orquestador consultan el MISMO detector y coinciden. Cubre el
+    caso "compuesto sin `?` ni término conocido" vía la señal LLM (mecanismo 3) cuando
+    el caller ya la tiene (worker). NUNCA dispara un LLM fresco: sin `turn_signals` es
+    determinista (gate barato para el orquestador).
+    """
+    if not (message or "").strip():
+        return False
+    if is_question(message) or _message_has_any(message, BUSINESS_QUESTION_TERMS):
+        return True
+    if _EMBEDDED_Q_SIGNAL.search(normalize_text(message or "")):
+        return True
+    if turn_signals is not None:
+        return bool(getattr(turn_signals, "has_embedded_question", False))
+    return False
 
 
 def should_prioritize_current_turn(message: str | None, last_bot_message: str | None = None) -> bool:

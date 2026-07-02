@@ -131,11 +131,8 @@ DOCUMENT_WORDS = (
     "información", "datos", "licencia", "apto", "ine", "curp", "comprobante", "cartas",
 )
 
-BUSINESS_QUESTION_TERMS = (
-    "pago", "pagan", "sueldo", "salario", "documento", "documentos", "papeles",
-    "requisitos", "licencia", "apto", "ruta", "rutas", "vacante", "vacantes",
-    "antidoping", "prueba", "orina", "base", "bases",
-)
+# Origen ÚNICO en current_turn (Fase 2/D5): evita dos listas divergentes.
+from app.knowledge.current_turn import BUSINESS_QUESTION_TERMS  # noqa: E402
 
 FAREWELL_HINTS = (
     "gracias señor", "gracias senor", "gracias muy amable", "muchas gracias",
@@ -274,20 +271,11 @@ def _time_reply() -> str:
     return f"En Torreón son las {time_text}; es la misma zona horaria del centro de México."
 
 
-def _looks_like_question(message: str) -> bool:
-    """Gate barato para `_resolve_embedded_question`: ¿el mensaje trae señal de
-    pregunta? Evita invocar el clasificador (costo) en respuestas puras. Los temas
-    RAG-contestables coinciden con BUSINESS_QUESTION_TERMS (pago, rutas, documentos,
-    licencia, apto, antidoping…)."""
-    if "?" in message or "¿" in message:
-        return True
-    return _message_has_any(message, BUSINESS_QUESTION_TERMS)
-
-
 def _resolve_embedded_question(
     message: str,
     contract: dict[str, Any],
     lead_memory: dict[str, Any] | None,
+    turn_signals: Any = None,
 ) -> dict[str, Any] | None:
     """answer_primary_question (multi-intent al path vivo).
 
@@ -302,7 +290,11 @@ def _resolve_embedded_question(
     """
     if contract.get("requires_rag") or contract.get("requires_human"):
         return None
-    if not _looks_like_question(message):
+    # Detector ÚNICO (Fase 2/D5): mismo que consume el guard del worker. Con
+    # turn_signals cubre el compuesto "sin ? ni término conocido"; sin señal es
+    # determinista (gate barato, no dispara LLM).
+    from app.knowledge.current_turn import has_business_question
+    if not has_business_question(message, turn_signals):
         return None
     try:
         from app.knowledge.intent_classifier import classify_message
@@ -1920,7 +1912,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # (perfil + pregunta) y la ruta principal no es RAG, resolvemos la pregunta
     # embebida. Si exige fuente autorizada y no la hay (pago), el fail-closed marca
     # requires_human ANTES de calcular flags/stage para que escale a HUMAN_REVIEW.
-    embedded_question = _resolve_embedded_question(message, contract, lead_memory_before)
+    embedded_question = _resolve_embedded_question(message, contract, lead_memory_before, turn_signals)
     if embedded_question and embedded_question["derive_to_human"]:
         contract["requires_human"] = True
         contract.setdefault("reason", "embedded_question_no_authorized_source")

@@ -369,8 +369,8 @@ def process_chatwoot_debounced_message(
         from app.graphs.hr_graph import run_hr_graph_message
         from app.knowledge.current_turn import (
             build_current_turn_ack,
+            has_business_question,
             is_campaign_or_interest_entry,
-            is_question,
         )
         from app.chatwoot_note_sync import sync_chatwoot_candidate_note
         from app.lead_memory.repository import get_lead_memory
@@ -497,11 +497,14 @@ def process_chatwoot_debounced_message(
             and k not in {"candidate.vacancy_accepted"}
             for k in _current_turn_facts
         )
+        # Detector ÚNICO (Fase 2/D5): mismo que el orquestador. Sustituye la pareja
+        # `signals.has_embedded_question` + `is_question` que antes decidían por
+        # separado y en desacuerdo (raíz del bug #3). Si hay pregunta de negocio, el
+        # guard NO dispara y deja que el orquestador la responda.
         _guard_should_fire = (
             not first_contact_greeting
             and not result.get("requires_human")
-            and not _pre_extraction.signals.has_embedded_question
-            and not is_question(combined_content)
+            and not has_business_question(combined_content, _pre_extraction.signals)
             and _has_profile_signal
             and _current_turn_facts
         )
