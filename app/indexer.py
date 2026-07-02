@@ -761,11 +761,12 @@ def _groq_with_fallback(
     timeout_key: str = "GROQ_TIMEOUT_SECONDS",
     timeout_default: str = "8",
     org2_key: str | None = None,
+    org3_key: str | None = None,
 ) -> str:
-    """Llama a _groq_call con primary_key; si devuelve RateLimitError y hay
-    backup_key, reintenta con ella. Si backup también falla y hay org2_key
-    (organización Groq distinta con cuota TPD independiente), reintenta una vez más.
-    Registra cada fallback en el log.
+    """Llama a _groq_call recorriendo las keys en orden (primary → backup → org2 →
+    org3), cada una una organización Groq con cuota TPD independiente. Ante
+    RateLimitError pasa a la siguiente disponible; si se agotan todas, propaga el
+    último error. Registra cada fallback en el log.
     """
     call_kwargs = dict(
         json_mode=json_mode,
@@ -774,20 +775,24 @@ def _groq_with_fallback(
         timeout_key=timeout_key,
         timeout_default=timeout_default,
     )
-    try:
-        return _groq_call(primary_key, messages, model, **call_kwargs)
-    except GroqRateLimitError as exc:
-        if not backup_key:
-            raise
-        print(f"[groq-fallback] cuota primaria agotada, usando BACKUP — {fn_name}", flush=True)
+    chain = [(lbl, k) for lbl, k in (
+        ("PRIMARY", primary_key),
+        ("BACKUP", backup_key),
+        ("ORG2", org2_key),
+        ("ORG3", org3_key),
+    ) if k]
+    last_exc: GroqRateLimitError | None = None
+    for i, (label, key) in enumerate(chain):
         try:
-            return _groq_call(backup_key, messages, model, **call_kwargs)
-        except GroqRateLimitError as exc2:
-            print(f"[groq-fallback] BACKUP también agotada — {fn_name}: {exc2}", flush=True)
-            if org2_key:
-                print(f"[groq-fallback] usando ORG2 — {fn_name}", flush=True)
-                return _groq_call(org2_key, messages, model, **call_kwargs)
-            raise exc2
+            return _groq_call(key, messages, model, **call_kwargs)
+        except GroqRateLimitError as exc:
+            last_exc = exc
+            nxt = chain[i + 1][0] if i + 1 < len(chain) else None
+            if nxt:
+                print(f"[groq-fallback] {label} agotada, usando {nxt} — {fn_name}", flush=True)
+            else:
+                print(f"[groq-fallback] {label} agotada, sin más keys — {fn_name}: {exc}", flush=True)
+    raise last_exc  # type: ignore[misc]
 
 
 def call_groq_llm(prompt: str) -> str:
@@ -798,6 +803,7 @@ def call_groq_llm(prompt: str) -> str:
 
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     # GROQ_LLM_HISTORY_TURNS: el orquestador ya acota el historial a messages[-4:]
     # con 180 chars por mensaje, por lo que el prompt no crece sin cota. Esta
     # variable queda disponible para documentación/ajuste futuro; no se aplica
@@ -813,6 +819,7 @@ def call_groq_llm(prompt: str) -> str:
             api_key, backup_key, "call_groq_llm", messages, GROQ_MODEL,
             temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS,
             org2_key=org2_key,
+            org3_key=org3_key,
         )
     except Exception as exc:
         print(f"[groq] Error: {type(exc).__name__}: {exc}", flush=True)
@@ -886,6 +893,7 @@ def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0
 
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": prompt},
@@ -896,6 +904,7 @@ def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0
             json_mode=True, temperature=temperature, max_tokens=GROQ_MAX_TOKENS,
             timeout_key="GROQ_JSON_TIMEOUT_SECONDS", timeout_default="10",
             org2_key=org2_key,
+            org3_key=org3_key,
         )
     except GroqRateLimitError:
         raise
@@ -916,6 +925,7 @@ def call_groq_with_system(system: str, user: str, *, temperature: float | None =
         return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     t = temperature if temperature is not None else TEMPERATURE
     messages = [
         {"role": "system", "content": system + _reasoning_suppression_suffix(GROQ_MODEL)},
@@ -926,6 +936,7 @@ def call_groq_with_system(system: str, user: str, *, temperature: float | None =
             api_key, backup_key, "call_groq_with_system", messages, GROQ_MODEL,
             temperature=t, max_tokens=max_tokens,
             org2_key=org2_key,
+            org3_key=org3_key,
         )
     except Exception as exc:
         print(f"[groq_with_system] Error: {type(exc).__name__}: {exc}", flush=True)
@@ -1075,6 +1086,7 @@ def call_groq_vision(
 
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     system_prompt = _VISION_PROMPT_STICKER if is_sticker else _VISION_PROMPT_IMAGE
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:{mime_type};base64,{b64}"
@@ -1122,6 +1134,21 @@ def call_groq_vision(
                     result = _call(org2_key)
                 except Exception as exc3:
                     print(f"[groq_vision] ORG2 falló: {type(exc3).__name__}: {exc3}", flush=True)
+                    if org3_key:
+                        print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                        try:
+                            result = _call(org3_key)
+                        except Exception as exc4:
+                            print(f"[groq_vision] ORG3 falló: {type(exc4).__name__}: {exc4}", flush=True)
+                            return ""
+                    else:
+                        return ""
+            elif org3_key:
+                print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                try:
+                    result = _call(org3_key)
+                except Exception as exc3:
+                    print(f"[groq_vision] ORG3 falló: {type(exc3).__name__}: {exc3}", flush=True)
                     return ""
             else:
                 return ""
