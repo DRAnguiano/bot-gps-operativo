@@ -114,7 +114,50 @@ REGLAS DE EVIDENCIA:
 - explicit_marker = true cuando el candidato usó un marcador explícito ("me llamo","soy de","vivo en","mi licencia vence en","tengo X años").
 - answered_direct_question = true cuando la pregunta del bot pedía ESE campo y el mensaje lo responde.
 
-embedded_question: si el candidato pregunta por pago/rutas/prestaciones/requisitos, pon el texto de la duda; si no, null.
+embedded_question / has_embedded_question: si el candidato PREGUNTA por pago, rutas, prestaciones,
+requisitos, documentos, licencia, apto, antidoping, vacantes, base, reingreso, entrevista/horario o
+proceso, pon la duda reescrita en español claro y marca has_embedded_question=true. Si no pregunta,
+null / false.
+
+LENGUAJE INFORMAL Y JERGA OPERATIVA (glosario derivado de chats reales):
+- El candidato escribe con faltas, sin signos, abreviaturas y mensajes cortados. Lee el texto CRUDO;
+  NO apliques un corrector ortográfico palabra por palabra. Puedes normalizar mentalmente para
+  comprender, pero conserva el valor DICHO.
+- Usa el contexto completo (pregunta previa del bot + datos conocidos + mensaje actual). El candidato
+  puede dar un dato Y hacer una duda en el mismo turno → extrae AMBOS.
+- "q","k","ke"→"qué/que"; "kiero"→"quiero"; "porq/pq/xq"→"por qué/porque"; "asta"→"hasta";
+  "ay/ai/ahy" es AMBIGUO (hay/ahí): decide por contexto, no como una sola palabra.
+- Jerga de operación (solo para ENTENDER de qué habla; NO infieras negocio de estos términos):
+  "tramo"=ruta; "circuito"=rutas FUERA del corredor principal (Monterrey–Laredo, Torreón–Saltillo–
+  Monterrey–Laredo y el noreste); "de qué lado la ruedan"/"pa dónde sale"/"jalones"/"vuelta"/"viaje"
+  = habla de RUTAS; "caja seca"=tipo de remolque (NO es full ni sencillo, no lo pongas como
+  vehicle_type); "op"/"5ta rueda"/"trailero"/"trucker"=el oficio de operador; "pipi"/"orines"/"el
+  vaso"=antidoping.
+- OJO ambiguo: "pa arriba"/"pal norte" NO tienen destino fijo — pueden ser norte de México O EUA;
+  NO los resuelvas a una ciudad/país ni asumas cruce fronterizo. Solo indican pregunta de rutas; el
+  destino real se valida después. "MTY"=Monterrey, "NLD"=Nuevo Laredo como topónimos, pero como
+  destino/ruta NO son residencia.
+- Pago en jerga: "k tanto deja","cuánto deja pa uno","a como sale la vuelta","x viaje cuánto" =
+  pregunta de PAGO.
+- Marca has_embedded_question=true aunque NO use "?", si pregunta por pago/km/movimiento/viajes/
+  tramo/circuito/base/descansos/vacante/requisitos/documentos/licencia/apto/escuelita/reingreso/
+  entrevista/antidoping.
+- NO marques pregunta solo porque menciona una palabra de dominio. ENUNCIADOS (sobre todo en PASADO)
+  NO son pregunta: "mi licencia vence en agosto", "mi ruta ERA laredo", "el pago anterior ERA
+  semanal", "tengo caja sencilla desde 2020".
+- candidate.city solo con ANCLA de residencia ("soy de","vivo en","radico en","resido en"). "ruta a
+  Monterrey" y "tramo a Laredo" NO son residencia — MTY/NLD sin ancla pueden ser destino/base.
+- "pipi"/"orines" refieren al antidoping SOLO cuando el contexto indica pregunta de ingreso. No
+  inventes política ni resultado de examen. Que mande imagen/PDF/sticker NO autoriza OCR.
+
+Ejemplos:
+- "d a komo da el km soi d torrion" (bot preguntó ciudad) → candidate.city="Torreón", embedded_question="¿a cómo pagan el kilómetro?", has_embedded_question=true
+- "lo de la pipi komo esta" → embedded_question="¿cómo es el antidoping del proceso?", has_embedded_question=true
+- "tngo 10 años full pero pa k lado la ruedan" → experience.years="10", experience.vehicle_type="full", embedded_question="¿qué rutas maneja la vacante?", has_embedded_question=true
+- "una vuelta d esas k tanto deja pa uno" → embedded_question="¿cuánto pagan por viaje?", has_embedded_question=true
+- "ai jalones pa arriba o puro cerka" → embedded_question="¿los viajes son largos o cortos?", has_embedded_question=true (NO resuelvas "pa arriba" a un destino)
+- "el pago anterior era semanal" → embedded_question=null, has_embedded_question=false (enunciado en pasado)
+- "mi ruta era nuevo laredo" → embedded_question=null, has_embedded_question=false; candidate.city=null (destino, no residencia)
 
 IMPORTANTE: Responde SOLO el JSON. value siempre es lo que el candidato DIJO, nunca una inferencia de negocio."""
 

@@ -894,13 +894,17 @@ def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
     org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    effective_model = model or GROQ_MODEL
+    # qwen es reasoning: sin /no_think emite <think> y rompe el JSON. El helper
+    # solo añade el sufijo para modelos qwen (no-op en llama).
+    system_message = system_message + _reasoning_suppression_suffix(effective_model)
     messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": prompt},
     ]
     try:
         return _groq_with_fallback(
-            api_key, backup_key, "call_groq_json", messages, model or GROQ_MODEL,
+            api_key, backup_key, "call_groq_json", messages, effective_model,
             json_mode=True, temperature=temperature, max_tokens=GROQ_MAX_TOKENS,
             timeout_key="GROQ_JSON_TIMEOUT_SECONDS", timeout_default="10",
             org2_key=org2_key,
