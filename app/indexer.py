@@ -658,8 +658,10 @@ def retrieve_context_for_guardrail(question: str, top_k: int | None = None) -> l
 def _reasoning_suppression_suffix(model: str) -> str:
     """Interruptor `/no_think` para modelos qwen reasoning (qwen3): evita que gasten
     el budget de tokens en `<think>…</think>` y trunquen la respuesta. No-op para
-    modelos no-qwen (70b/otros). Solo se aplica en GENERACIÓN de prosa, nunca en
-    `call_groq_json` (extracción/clasificación), para no ensuciar el JSON."""
+    modelos no-qwen (70b/gpt-oss/otros). Se aplica tanto en GENERACIÓN como en
+    `call_groq_json` cuando el modelo es qwen (validado: con qwen en JSON, /no_think
+    da 0 parse-errors). Para gpt-oss el manejo es distinto (reasoning_format=hidden en
+    `_groq_call`), no este sufijo."""
     return " /no_think" if "qwen" in (model or "").lower() else ""
 
 
@@ -742,6 +744,12 @@ def _groq_call(
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    # gpt-oss son reasoning: sin esto filtran <think> en el output (el /no_think de
+    # qwen NO aplica; es syntax de qwen). reasoning_format=hidden lo quita en origen;
+    # reasoning_effort=low reduce tokens/latencia. Se pasa por extra_body por si la
+    # versión del SDK no los expone como kwargs directos.
+    if "gpt-oss" in (model or "").lower():
+        kwargs["extra_body"] = {"reasoning_effort": "low", "reasoning_format": "hidden"}
     with httpx.Client(timeout=timeout) as http_client:
         client = Groq(api_key=api_key, http_client=http_client)
         completion = client.chat.completions.create(**kwargs)
