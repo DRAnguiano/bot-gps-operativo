@@ -2035,6 +2035,21 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             reply = f"{reply}\n\n{nudge}"
         else:
             asked_field_keys = []  # no nudge appended → no field was asked
+            if profile_ack_used:
+                # El acuse de perfil ahora es solo un conector ("Bien."). Si el nudge no
+                # emitió pregunta, garantiza que el turno lleve la siguiente pregunta del
+                # funnel (o el cierre) desde la MISMA fuente única que el guard —nunca un
+                # conector suelto—. Alinea la ruta del orquestador con la del worker.
+                from app.knowledge.current_turn import next_question_from_missing_facts
+                _merged_ack = {
+                    f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+                    for r in (lead_memory_before.get("facts") or []) if r.get("fact_value")
+                }
+                for _f in (_pre_validated or []):
+                    _merged_ack[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+                _next_q = next_question_from_missing_facts(_merged_ack)
+                if _next_q:
+                    reply = f"{reply}\n\n{_next_q}"
 
     # Guard de léxico de vigencia sobre la respuesta final (todas las rutas): el bot
     # nunca emite "caduca/caducidad" al candidato.

@@ -140,7 +140,9 @@ def _expiry_within_three_months(expiration_text: Any) -> bool:
     t = normalize_text(str(expiration_text or ""))
     if not t:
         return False
-    if any(word in t for word in ("vencido", "vencida", "caducado", "caducada")):
+    # "vencio" cubre "venció/se venció/ya venció" (verbo en pasado, ya vencido); NO
+    # matchea "vence en 2 años" (presente/futuro). "vencido/vencida" cubren el adjetivo.
+    if any(word in t for word in ("vencido", "vencida", "vencio", "caducado", "caducada", "caduco")):
         return True
     m = re.search(
         r"\b(\d{1,2}|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+"
