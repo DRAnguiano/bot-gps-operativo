@@ -1,31 +1,35 @@
 import datetime
 import os
+import random
 import re
 from typing import Any
 
 from app.knowledge.business_hours import is_business_hours
 from app.knowledge.text_normalizer import normalize_text
 
+# Conectores breves y VARIADOS para la transición del funnel (sin eco de datos).
+# Variar evita el tono robótico de un acuse fijo; el saludo con nombre va aparte.
+_FUNNEL_CONNECTORS: tuple[str, ...] = (
+    "Va.", "Perfecto.", "Listo.", "Muy bien.", "De acuerdo.", "Bien.", "Claro.",
+)
 
 
-def _profile_complete_closing() -> str:
-    """Closing message shown when all profile fields have been collected."""
+
+def _profile_complete_closing(facts: dict[str, Any] | None = None) -> str:
+    """Cierre cuando el perfil conversacional está completo. Ligero, sin recordatorios
+    redundantes (feedback usuario 2026-07-03): acusa el avance y pasa al siguiente paso
+    (subir documentos) de forma breve. `facts` permite adaptar el mensaje (etapa visión)."""
     en_horario = is_business_hours()
     msg = (
-        "¡Gracias por completar tu información! Para avanzar en tu proceso, "
-        "te pedimos que vayas subiendo tus documentos: licencia federal, apto médico y cartas laborales. "
-        "Una vez que los verifiquemos y todo esté en orden, nos comunicaremos contigo "
-        "siempre que sigas interesado."
+        "¡Listo! Con esto completamos tu perfil. El siguiente paso es subir tus documentos "
+        "(licencia federal, apto médico y tu comprobante laboral) para validarlos."
     )
     if en_horario:
-        msg += (
-            " Lo dejo registrado para que nuestro equipo pueda contactarte dentro del horario de atención."
-        )
+        msg += " En cuanto los tengamos, nuestro equipo continúa con tu proceso."
     else:
         msg += (
-            " Nuestro horario de atención es de lunes a viernes de 08:00 a 17:30 hrs (centro de México). "
-            "Si gustas, dinos un horario en ese rango para agendarte una llamada, "
-            "y sube tus documentos para que en cuanto arranque el sistema de oficina podamos continuar con tu candidatura."
+            " Puedes subirlos cuando gustes; nuestro horario es de lunes a viernes de 08:00 a "
+            "17:30 hrs (centro de México) y en cuanto arranque el equipo seguimos."
         )
     return msg
 
@@ -746,45 +750,13 @@ def build_current_turn_ack(
     if name_just_learned and _fname:
         return _join_ack_and_question(f"Gracias, {_fname}.", next_question_from_missing_facts(facts))
 
-    # Frases de confirmación naturales por tipo de dato (P2-5)
-    confirms = []
-    if current.get("candidate.city"):
-        confirms.append(f"Anotado, {current['candidate.city']}.")
-    if current.get("candidate.age"):
-        confirms.append(f"Edad anotada, continuamos con el proceso.")
-    vt = current.get("experience.vehicle_type")
-    if vt == "sencillo":
-        confirms.append("Entendido, experiencia en camión sencillo.")
-    elif vt == "full":
-        # Solo full confirma tracto full; jerga (quinta rueda/tráiler) nunca
-        # llega aquí como vehicle_type y no debe afirmarse como full.
-        confirms.append("Entendido, operador de tracto full.")
-    if current.get("license.category"):
-        confirms.append(f"Queda anotado: licencia federal tipo {current['license.category']}.")
-    _lic_exp = current.get("license.expiration_text")
-    if _lic_exp and _lic_exp != "vencido" and is_valid_expiration_text(_lic_exp):
-        confirms.append(f"Tomamos nota, licencia vigente ({_lic_exp}).")
-    _apto_exp = current.get("medical.apto_expiration_text")
-    if _apto_exp and _apto_exp != "vencido" and is_valid_expiration_text(_apto_exp):
-        confirms.append(f"Bien, apto médico vigente ({_apto_exp}).")
-    if current.get("medical.apto_status") == "vigente":
-        if not (_apto_exp and is_valid_expiration_text(_apto_exp)):
-            confirms.append("Bien, apto médico vigente.")
-    if current.get("experience.years"):
-        _yrs = current["experience.years"]
-        _yrs_str = str(_yrs).strip() if _yrs else ""
-        if _yrs_str and _yrs_str not in ("None", ""):
-            confirms.append(f"{_yrs_str} años de experiencia, anotado.")
-        else:
-            confirms.append("Experiencia anotada.")
-    if current.get("documents.labor_letters") == "sí" or current.get("documents.proof") in {"cartas", "semanas_imss"}:
-        confirms.append("Listo, documentos anotados.")
-    if current.get("documents.general_status") == "vigente":
-        confirms.append("Documentación vigente, anotado.")
-
-    if confirms:
-        prefix = " ".join(confirms)
-    else:
-        prefix = "Gracias, lo dejo registrado."
-
-    return _join_ack_and_question(prefix, next_question_from_missing_facts(facts))
+    # Sin eco de datos (feedback usuario 2026-07-03: se sentía robótico repetir cada
+    # dato). Un conector natural BREVE y VARIADO + la siguiente pregunta del funnel.
+    # El saludo con nombre (arriba) es la única confirmación con dato. Las respuestas a
+    # negativas/absurdos las genera el LLM aparte (empathetic-funnel D1).
+    _next_q = _next_funnel_question_or_none(facts)
+    if _next_q is not None:
+        _connector = random.choice(_FUNNEL_CONNECTORS)
+        return _join_ack_and_question(_connector, _next_q)
+    # Perfil completo: mensaje de cierre (sin conector ni eco).
+    return _profile_complete_closing(facts)

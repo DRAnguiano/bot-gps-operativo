@@ -1989,8 +1989,11 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                 _r1_confirmed = True
                 _r1_field: str = _r1["field"]
                 _r1_value = _r1.get("value")
-                _ack_tmpl = ROUTE1_ACK.get(_r1_field, "Entendido.")
-                _r1_ack = _ack_tmpl.format(value=_r1_value if _r1_value is not None else "")
+                # Sin eco de datos (feedback usuario 2026-07-03): conector breve variado
+                # en vez de "Entendido, {value}" / "{value} años, anotado".
+                import random as _random
+                from app.knowledge.current_turn import _FUNNEL_CONNECTORS
+                _r1_ack = _random.choice(_FUNNEL_CONNECTORS)
                 _parts = _r1_field.split(".", 1)
                 _r1_fact = {
                     "fact_group": _parts[0],
