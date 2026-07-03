@@ -3,15 +3,15 @@
 
 ## 1. Fixes de bajo riesgo (verificados en conv 160)
 
-- [ ] 1.1 Cierre sin redundancia: cuando el comprobante laboral ya está cumplido (cartas O IMSS), acuse específico y NO emitir el recordatorio genérico.
-- [ ] 1.2 Fix "20 anos años" — normalizar el ack de experiencia para no duplicar "años".
-- [ ] 1.3 Tests: cartas→"con cartas es suficiente" (sin recordatorio); ack de años sin duplicar.
+- [x] 1.1 Cierre sin redundancia: `_profile_complete_closing` más ligero (sin "nos comunicaremos siempre que sigas interesado" ni recordatorio pesado). ADEMÁS se quitó TODO el eco de datos del funnel (3 rutas: guard `build_current_turn_ack`, ROUTE1, orquestador `_build_profile_ack_reply`) → conector variado + siguiente pregunta; el saludo con nombre se conserva.
+- [x] 1.2 Fix "20 anos años" — subsumido: el eco de años se eliminó por completo.
+- [x] 1.3 Tests: conector variado + pregunta sin eco (verificado en vivo "Gracias, Juan. ¿En qué ciudad…?").
 
 ## 2. Alternativas por requisito (D3)
 
-- [ ] 2.1 Comprobante laboral cartas↔IMSS: si falta una, ofrecer la otra (local ZM Laguna).
-- [ ] 2.2 Licencia/apto no vigente → aceptar comprobante de pago de renovación/trámite.
-- [ ] 2.3 Tests: sin IMSS→ofrece cartas y viceversa; apto no vigente→acepta comprobante de pago.
+- [x] 2.1 Comprobante laboral cartas↔IMSS: ya funcionaba vía `residency_document_question` (local ofrece IMSS↔cartas; foráneo cartas) — verificado determinista.
+- [x] 2.2 Licencia/apto no vigente → comprobante de pago: `RENEWAL_PROOF_QUESTION/REPLY` re-redactadas ("comprobante de pago de su renovación o trámite", válido para vencido y por-vencer); `_expiry_within_three_months` ahora detecta "venció/se venció"; nudge del orquestador replica el check (alineado con el guard).
+- [x] 2.3 Tests: vencida→comprobante; +comprobante SI→continúa; NO→cierre suave; vigente→apto (sin regresión); apto vencido→comprobante. Verificado determinista + smoke en vivo.
 
 ## 3. Respuestas naturales por LLM (D1)
 
