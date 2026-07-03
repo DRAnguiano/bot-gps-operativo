@@ -384,6 +384,27 @@ def process_chatwoot_debounced_message(
                 last_bot_message = str(_m.get("message") or "")[:500]
                 break
 
+        # ── Bloque 4: guardia de insistencia — si el lead está en pausa (tras 5 ruegos
+        # sin dato válido), NO se procesa ni responde (suppress), SIN gastar LLM. El
+        # avance del perfil ya está preservado en facts; pasada la hora, el siguiente
+        # mensaje reanuda normal desde donde quedó. ──────────────────────────────────
+        from app.knowledge.insistence_guard import is_paused as _ig_is_paused
+        _pause_lead_key = (pre_memory.get("lead") or {}).get("lead_key") or conversation_key_for_facts
+        if _ig_is_paused(_pause_lead_key):
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "[INSISTENCE_PAUSED_SUPPRESS] lead=%s conv=%s — sin respuesta (pausa activa)",
+                _pause_lead_key, conversation_id,
+            )
+            return {
+                "status": "ok",
+                "processed": False,
+                "sent_to_chatwoot": False,
+                "batch_size": len(messages),
+                "combined_content": combined_content,
+                "reason": "insistence_paused",
+            }
+
         # ── 6.1: extracción única antes de bifurcar guard/orquestador ──────────
         from app.knowledge.turn_extractor import extract_turn, validate_extraction
         from app.knowledge.text_normalizer import normalize_text as _norm

@@ -1404,11 +1404,14 @@ _REENCAUCE_ALT = {
 }
 
 
-def _build_natural_reencauce(field: str, message: str, reason: str) -> str | None:
+def _build_natural_reencauce(field: str, message: str, reason: str, final: bool = False) -> str | None:
     """Respuesta natural (persona Mundo) cuando el candidato responde a un campo del
     funnel con una negativa, algo irrelevante o absurdo. Acusa con tacto, ofrece la
     alternativa CONOCIDA si aplica (sin inventar política) y re-encauza al dato pendiente.
-    NO marca el campo como respondido (ROUTE1 no confirmó → sigue pendiente)."""
+    NO marca el campo como respondido (ROUTE1 no confirmó → sigue pendiente).
+
+    ``final=True``: mensaje de CIERRE tras insistencia sostenida (5ª) — empático, sin
+    volver a preguntar, indicando que retomamos en cuanto tenga el dato/documento."""
     desc = _REENCAUCE_FIELD_DESC.get(field, "el dato que le pedí")
     alt = _REENCAUCE_ALT.get(field, "")
     situacion = (
@@ -1416,17 +1419,28 @@ def _build_natural_reencauce(field: str, message: str, reason: str) -> str | Non
         if reason == "negation"
         else "el candidato respondió algo que no corresponde a esa pregunta"
     )
-    prompt = (
-        f"Le preguntaste al candidato por {desc}. Ahora {situacion}: \"{message[:200]}\". "
-        "Responde con EMPATÍA GENUINA en 2 o 3 frases, con este hilo: "
-        "(1) valida con calidez lo que el candidato comparte, reconociendo su punto (sin repetirlo literal ni regañar); "
-        "(2) explícale con tacto que, por formalidad y política de la empresa, necesitamos el dato concreto "
-        "o el documento que lo acredite para poder integrarlo a su expediente; "
-        + (f"(en ese punto menciona tal cual esta opción: {alt}) " if alt else "")
-        + f"(3) re-encauza pidiéndole de nuevo {desc}, de forma natural y amable. "
-        "Nunca suenes robótico ni cortante. No inventes cifras, fechas ni políticas específicas fuera de esta guía. "
-        "Nunca uses la palabra 'caduca'."
-    )
+    if final:
+        prompt = (
+            f"El candidato ha insistido varias veces sin poder darte {desc}, apelando a su "
+            f"situación personal (último mensaje: \"{message[:200]}\"). "
+            "Responde con MUCHA empatía en 2 frases, cerrando con calidez y firmeza amable: "
+            "reconoce su situación, explícale que por política de la empresa no podemos avanzar sin "
+            f"ese requisito, y que EN CUANTO tenga {desc} retomamos con gusto su proceso y quedas al pendiente. "
+            "NO vuelvas a preguntar en esta respuesta. Nunca regañes ni suenes cortante. "
+            "No inventes cifras ni políticas fuera de esta guía. Nunca uses la palabra 'caduca'."
+        )
+    else:
+        prompt = (
+            f"Le preguntaste al candidato por {desc}. Ahora {situacion}: \"{message[:200]}\". "
+            "Responde con EMPATÍA GENUINA en 2 o 3 frases, con este hilo: "
+            "(1) valida con calidez lo que el candidato comparte, reconociendo su punto (sin repetirlo literal ni regañar); "
+            "(2) explícale con tacto que, por formalidad y política de la empresa, necesitamos el dato concreto "
+            "o el documento que lo acredite para poder integrarlo a su expediente; "
+            + (f"(en ese punto menciona tal cual esta opción: {alt}) " if alt else "")
+            + f"(3) re-encauza pidiéndole de nuevo {desc}, de forma natural y amable. "
+            "Nunca suenes robótico ni cortante. No inventes cifras, fechas ni políticas específicas fuera de esta guía. "
+            "Nunca uses la palabra 'caduca'."
+        )
     try:
         from app.indexer import call_groq_with_system
         from app.persona_config import SYSTEM_PROMPT
@@ -1997,6 +2011,9 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             _r1 = resolve_route1(message, _fresh_keys)
             if _r1["status"] == "confirmed":
                 _r1_confirmed = True
+                # Bloque 4: aportó un dato válido → reinicia el contador de insistencia.
+                from app.knowledge.insistence_guard import reset_insistence
+                reset_insistence(lead_key)
                 _r1_field: str = _r1["field"]
                 _r1_value = _r1.get("value")
                 # Sin eco de datos (feedback usuario 2026-07-03): conector breve variado
@@ -2028,12 +2045,24 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                 from app.knowledge.current_turn import has_business_question as _hbq
                 if (_r1.get("reason") in {"negation", "no_number", "needs_clarification", "ambiguous"}
                         and not _hbq(message, turn_signals)):
-                    _natural_reencauce = _build_natural_reencauce(
-                        _fresh_keys[0], message, str(_r1.get("reason"))
+                    # Bloque 4: cada no-respuesta/ruego suma al contador de insistencia.
+                    # A la 5ª → mensaje empático FINAL + pausa 1h (el worker suprime a partir
+                    # del siguiente turno). El avance del perfil se preserva.
+                    from app.knowledge.insistence_guard import (
+                        increment_insistence, set_pause, INSISTENCE_LIMIT,
                     )
-                    if _natural_reencauce:
-                        log.info("[NATURAL_REENCAUCE] lead=%s field=%s reason=%s",
-                                 lead_key, _fresh_keys[0], _r1.get("reason"))
+                    _icount = increment_insistence(lead_key)
+                    _is_final = _icount >= INSISTENCE_LIMIT
+                    _natural_reencauce = _build_natural_reencauce(
+                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final
+                    )
+                    if _natural_reencauce and _is_final:
+                        set_pause(lead_key)
+                        log.info("[INSISTENCE_PAUSE] lead=%s field=%s count=%s → pausa 1h",
+                                 lead_key, _fresh_keys[0], _icount)
+                    elif _natural_reencauce:
+                        log.info("[NATURAL_REENCAUCE] lead=%s field=%s reason=%s count=%s",
+                                 lead_key, _fresh_keys[0], _r1.get("reason"), _icount)
     except Exception as exc:
         log.warning("[ROUTE1] omitido por error: %s", exc)
 
