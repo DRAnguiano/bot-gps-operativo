@@ -77,12 +77,12 @@ def residency_document_question(facts: dict[str, Any]) -> str:
 
 from app.settings import AGE_DISQUALIFICATION_LIMIT as AGE_LIMIT_EXCLUSIVE
 RENEWAL_PROOF_QUESTION = (
-    "Su {documento} vence en menos de 3 meses. ¿Ya tiene el papel o comprobante "
-    "de renovación?"
+    "Para continuar con su {documento}, como alternativa aceptamos el comprobante "
+    "de pago de su renovación o trámite. ¿Ya cuenta con ese comprobante?"
 )
 RENEWAL_PROOF_REQUIRED_REPLY = (
-    "Entiendo. Para continuar necesitamos que tenga el papel o comprobante de "
-    "renovación. Cuando lo tenga, continuamos con su registro."
+    "Entiendo. Para continuar necesitamos el comprobante de pago de su renovación o "
+    "trámite. En cuanto lo tenga, seguimos con su registro."
 )
 
 _NUMBER_WORDS = {
