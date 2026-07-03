@@ -1057,7 +1057,7 @@ def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _stage_for_contract(contract: dict[str, Any], message: str) -> str:
+def _stage_for_contract(contract: dict[str, Any], message: str, turn_signals: Any = None) -> str:
     intent = str(contract.get("intent") or "unknown")
     route = str(contract.get("route") or "fallback")
     text = normalize_text(message)
@@ -1065,7 +1065,10 @@ def _stage_for_contract(contract: dict[str, Any], message: str) -> str:
     try:
         from app.settings import AGE_DISQUALIFICATION_LIMIT
         from app.lead_memory.profile_extractor import extract_profile_facts_as_dict
-        age = int(str(extract_profile_facts_as_dict(message).get("candidate.age") or "").strip())
+        # Perf: pasa turn_signals (ya calculado por el extractor unificado del worker)
+        # para NO re-clasificar con TIPC — era 1 llamada LLM redundante por turno
+        # (cuello de latencia bajo carga: reintentos 429).
+        age = int(str(extract_profile_facts_as_dict(message, turn_signals=turn_signals).get("candidate.age") or "").strip())
         if age >= AGE_DISQUALIFICATION_LIMIT:
             return "closed"
     except Exception:
@@ -1922,7 +1925,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
 
     current_stage = str(conversation.get("current_stage") or "START")
     next_stage = "HUMAN_REVIEW_REQUIRED" if contract.get("requires_human") else current_stage
-    lead_stage_to = _stage_for_contract(contract, message)
+    lead_stage_to = _stage_for_contract(contract, message, turn_signals)
 
     rag_result: dict[str, Any] | None = None
     friendly_result: dict[str, Any] | None = None
@@ -1936,7 +1939,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     elif _should_use_friendly_llm(message, contract):
         if contract.get("route") == "fallback" and contract.get("intent") == "unknown":
             contract.update({"route": "friendly_smalltalk", "intent": "friendly_smalltalk", "reason": "safe_unknown_routed_to_friendly_llm"})
-            lead_stage_to = _stage_for_contract(contract, message)
+            lead_stage_to = _stage_for_contract(contract, message, turn_signals)
         friendly_result = _answer_friendly_message(message, contract, lead_memory_before)
         reply = friendly_result["reply"]
     elif contract.get("intent") == "greeting":
