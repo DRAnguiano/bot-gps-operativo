@@ -1418,15 +1418,19 @@ def _build_natural_reencauce(field: str, message: str, reason: str) -> str | Non
     )
     prompt = (
         f"Le preguntaste al candidato por {desc}. Ahora {situacion}: \"{message[:200]}\". "
-        "Responde en 1 o 2 frases, con calidez y tacto (nunca robótico, sin regañar, sin repetir literal su mensaje). "
-        + (f"Menciona brevemente esta opción tal cual: {alt} " if alt else "")
-        + f"Luego re-encauza pidiendo de nuevo {desc}, de forma natural. "
-        "No inventes datos, cifras ni políticas fuera de lo indicado aquí. Nunca uses la palabra 'caduca'."
+        "Responde con EMPATÍA GENUINA en 2 o 3 frases, con este hilo: "
+        "(1) valida con calidez lo que el candidato comparte, reconociendo su punto (sin repetirlo literal ni regañar); "
+        "(2) explícale con tacto que, por formalidad y política de la empresa, necesitamos el dato concreto "
+        "o el documento que lo acredite para poder integrarlo a su expediente; "
+        + (f"(en ese punto menciona tal cual esta opción: {alt}) " if alt else "")
+        + f"(3) re-encauza pidiéndole de nuevo {desc}, de forma natural y amable. "
+        "Nunca suenes robótico ni cortante. No inventes cifras, fechas ni políticas específicas fuera de esta guía. "
+        "Nunca uses la palabra 'caduca'."
     )
     try:
         from app.indexer import call_groq_with_system
         from app.persona_config import SYSTEM_PROMPT
-        out = call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.5, max_tokens=140)
+        out = call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.55, max_tokens=200)
         return (out or "").strip() or None
     except Exception as exc:
         log.warning("[NATURAL_REENCAUCE] generación falló: %s", exc)
