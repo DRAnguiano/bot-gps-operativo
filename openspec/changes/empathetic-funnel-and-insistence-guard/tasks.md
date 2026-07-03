@@ -29,6 +29,13 @@
 - [ ] 4.5 Reanudar tras 1h desde donde quedó.
 - [ ] 4.6 Tests: 5 ruegos→pausa; reset por dato válido; no responde durante la hora; reanuda después.
 
+## 4b. Guardia anti-spam (D7, agnóstica de contenido)
+
+- [ ] 4b.1 Umbral por lead: N mensajes en T segundos (config) → coalescer en un solo turno; descartar duplicados idénticos.
+- [ ] 4b.2 NO generar una respuesta LLM por cada mensaje de una ráfaga (evita 429/latencia).
+- [ ] 4b.3 Flood sostenido → pausa temporal (reusa mecanismo de D4) + label opcional.
+- [ ] 4b.4 Tests: 8 msgs/15s → 1 turno; duplicados descartados; flood → pausa.
+
 ## 5. Labels nuevos + derivaciones
 
 - [ ] 5.1 Añadir `insistencia` y `descartado_edad` a `OFFICIAL_LABELS` + display (usuario los crea en Chatwoot en paralelo).

@@ -28,6 +28,7 @@ El perfilamiento hoy es **robótico** ante respuestas no-estándar y **redundant
 - `empathetic-funnel-responses`: negativas/laterales/absurdas respondidas por LLM con re-encauce, en todas las preguntas del funnel.
 - `document-alternatives`: alternativas aceptadas por requisito (cartas↔IMSS; licencia/apto → comprobante de pago).
 - `insistence-guard`: detección de ruego + pausa de 1h tras 5 insistencias sin documento válido; preserva estado.
+- `anti-spam-guard`: límite de volumen/ritmo por lead (flood, agnóstico de contenido); coalesce ráfagas sin una llamada LLM por mensaje; en prod es ruido, costo y peligro (agota rate-limit → 429).
 
 ### Modified Capabilities
 - `chatwoot-ai-note` / `chatwoot-label-taxonomy`: reflejar estado de pausa/insistencia y requisito-cumplido-por-alternativa.

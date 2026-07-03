@@ -29,6 +29,12 @@ Si no tiene ni el documento ni la alternativa → entra la guardia de insistenci
 
 **D6 — Fix menor.** El ack de experiencia duplica "años" ("20 anos años"): normalizar para no repetir la unidad.
 
+**D7 — Guardia anti-spam (flood, agnóstica de contenido).** Distinta de D4 (ruego, por contenido): D7 se dispara por VOLUMEN/RITMO anormal de mensajes de un mismo lead, sin importar el contenido. Peligro en prod: costo LLM, agotamiento de rate-limit (429), ruido para Capital Humano, abuso.
+- El **debounce** actual (~6s, "la última tarea gana") ya coalesce ráfagas cortas → base anti-flood.
+- Añadir umbral por lead: si supera **N mensajes en T segundos** (p. ej. >6 en 20s) o envía mensajes mientras un turno sigue procesando → **coalescer agresivo** (un solo turno con el combinado) y/o **cooldown breve** sin gastar una llamada LLM por mensaje. Mensajes idénticos repetidos → descartar duplicados.
+- Flood egregio sostenido → mismo mecanismo de pausa que D4 (silencio temporal) + label opcional.
+- NUNCA gastar una generación LLM por cada mensaje de una ráfaga: eso es lo que causó los 429/latencia observados.
+
 ## Risks / Trade-offs
 
 - **Silenciar un caso legítimo** (falso positivo de ruego) → Mitigación: el reset por dato válido es inmediato; la pausa es corta (1h); el ruego lo detecta el LLM con contexto, no un regex.
