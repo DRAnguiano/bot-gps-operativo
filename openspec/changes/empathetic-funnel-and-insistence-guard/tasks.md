@@ -15,10 +15,11 @@
 
 ## 3. Respuestas naturales por LLM (D1)
 
-- [ ] 3.1 Rama de negativa/lateral/absurda: generar reply con la persona de Mundo (acuse + política/alternativa + re-encauce), preservando el dato pendiente; aplica a todas las preguntas del funnel.
-- [ ] 3.2 Detección de "no es valor válido para el dato pedido" (reusar señales del extractor).
-- [ ] 3.3 Guardrails: no inventar política; mantener vigencia-léxico; no marcar el dato como respondido.
-- [ ] 3.4 Tests: "experiencia con videos de tiktok"→responde natural + re-pide; negativa→empático + alternativa.
+- [x] 3.1 `_build_natural_reencauce` (persona Mundo): acuse con tacto + alternativa conocida si aplica + re-encauce; short-circuit del nudge; dato pendiente se preserva. Hook en el `else` de ROUTE1 (orquestador).
+- [x] 3.2 Detección vía `resolve_route1` reason ∈ {negation, no_number, needs_clarification, ambiguous} + NO `has_business_question` (esa la maneja el multi-intent).
+- [x] 3.3 Guardrails: prompt "no inventes políticas/cifras"; alternativas solo las conocidas (Bloque 2); "nunca uses 'caduca'" + `_enforce_vigencia_lexicon`; ROUTE1 no confirma → campo NO se marca respondido.
+- [x] 3.4 Tests verificados: "experiencia con videos de tiktok"→re-encauce natural, years NO persiste; "no tengo cartas"→empático+alternativa; "llevo 20 años"→confirma normal (sin regresión); business-question mid-funnel→multi-intent (no reencauce).
+  - Nota de cobertura: absurdo/lateral y negativa-sin-fact → reencauce LLM. Negativa donde el extractor sí fija un fact (p. ej. `documents.proof=ninguno`) la resuelve el GUARD ofreciendo la alternativa (Bloque 2) — resultado correcto, no LLM-flowery. Full-natural para ese caso queda como refinamiento (o lo cubre la guardia de insistencia B4).
 
 ## 4. Guardia de ruego/insistencia + pausa 1h (D4/D5)
 
