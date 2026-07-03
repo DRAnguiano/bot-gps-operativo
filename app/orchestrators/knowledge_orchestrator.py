@@ -1381,6 +1381,59 @@ def _build_profile_ack_reply(message: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Bloque 3 (D1): respuesta natural ante negativa/lateral/absurda a un campo del funnel.
+# ---------------------------------------------------------------------------
+
+# Descripción humana del dato pendiente (para re-encauzar con naturalidad, sin eco).
+_REENCAUCE_FIELD_DESC = {
+    "experience.years": "sus años de experiencia como operador",
+    "experience.vehicle_type": "si su experiencia es en tracto full o en sencillo",
+    "candidate.city": "la ciudad donde se encuentra actualmente",
+    "candidate.age": "su edad",
+    "candidate.name": "su nombre",
+    "license.category": "el tipo de licencia federal (A, B o E) que tiene",
+    "license.expiration_text": "la vigencia de su licencia federal",
+    "medical.apto_expiration_text": "la vigencia de su apto médico",
+    "documents.labor_letters_status": "su comprobante laboral",
+}
+# Alternativa/política CONOCIDA por campo (guardrail: no inventar; solo lo de Bloque 2).
+_REENCAUCE_ALT = {
+    "license.expiration_text": "Si está vencida o en trámite, también aceptamos el comprobante de pago de la renovación.",
+    "medical.apto_expiration_text": "Si está vencido o en trámite, también aceptamos el comprobante de pago de la renovación.",
+    "documents.labor_letters_status": "Aceptamos cartas laborales membretadas o el documento de semanas cotizadas del IMSS; con cualquiera de los dos basta.",
+}
+
+
+def _build_natural_reencauce(field: str, message: str, reason: str) -> str | None:
+    """Respuesta natural (persona Mundo) cuando el candidato responde a un campo del
+    funnel con una negativa, algo irrelevante o absurdo. Acusa con tacto, ofrece la
+    alternativa CONOCIDA si aplica (sin inventar política) y re-encauza al dato pendiente.
+    NO marca el campo como respondido (ROUTE1 no confirmó → sigue pendiente)."""
+    desc = _REENCAUCE_FIELD_DESC.get(field, "el dato que le pedí")
+    alt = _REENCAUCE_ALT.get(field, "")
+    situacion = (
+        "el candidato dice que no lo tiene o lo niega"
+        if reason == "negation"
+        else "el candidato respondió algo que no corresponde a esa pregunta"
+    )
+    prompt = (
+        f"Le preguntaste al candidato por {desc}. Ahora {situacion}: \"{message[:200]}\". "
+        "Responde en 1 o 2 frases, con calidez y tacto (nunca robótico, sin regañar, sin repetir literal su mensaje). "
+        + (f"Menciona brevemente esta opción tal cual: {alt} " if alt else "")
+        + f"Luego re-encauza pidiendo de nuevo {desc}, de forma natural. "
+        "No inventes datos, cifras ni políticas fuera de lo indicado aquí. Nunca uses la palabra 'caduca'."
+    )
+    try:
+        from app.indexer import call_groq_with_system
+        from app.persona_config import SYSTEM_PROMPT
+        out = call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.5, max_tokens=140)
+        return (out or "").strip() or None
+    except Exception as exc:
+        log.warning("[NATURAL_REENCAUCE] generación falló: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Funnel nudge — one profiling question appended after RAG/friendly answers.
 # Order follows the linear recruiting flow. Variants avoid repetition.
 # ---------------------------------------------------------------------------
@@ -1624,6 +1677,20 @@ def _build_funnel_nudge(
             except Exception:
                 pass
 
+    # Comprobante de pago por licencia/apto vencido (Bloque 2): el funnel canónico lo pide
+    # ENTRE licencia y apto; _FUNNEL_STEPS solo checa presencia de key y lo omitiría (pidió
+    # apto en su lugar). Se replica aquí, solo cuando los datos previos ya están (no
+    # adelantar sobre un campo anterior faltante). Alinea la ruta del orquestador con el guard.
+    _pre_license_ready = all(active_facts.get(k) for k in (
+        "candidate.name", "candidate.city", "candidate.age",
+        "experience.vehicle_type", "license.category",
+    ))
+    if _pre_license_ready:
+        from app.knowledge.current_turn import _renewal_question_for_short_expiry
+        _renewal_q = _renewal_question_for_short_expiry(active_facts)
+        if _renewal_q:
+            return _renewal_q, []
+
     for step in _FUNNEL_STEPS:
         if not any(k not in active_facts for k in step["keys"]):
             continue
@@ -1654,6 +1721,14 @@ def _build_funnel_nudge(
             )
         return random.choice(step["variants"]), _canonical_asked_keys(step["keys"])
 
+    # Fallback de fuente única: _FUNNEL_STEPS solo checa presencia de keys y no modela
+    # reglas del funnel canónico (p. ej. comprobante de pago por licencia/apto vencido).
+    # Si el funnel del guard SÍ tiene una pregunta pendiente, emítela para no dejar el
+    # turno en un conector suelto ("Muy bien.") en las ramas ROUTE1/objeción/profile-ack.
+    from app.knowledge.current_turn import _next_funnel_question_or_none
+    _canon_q = _next_funnel_question_or_none(active_facts)
+    if _canon_q is not None:
+        return _canon_q, []
     return None, []  # All profile fields covered — no nudge needed
 
 
@@ -1908,6 +1983,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # ANTES del nudge para que el campo confirmado no se vuelva a preguntar este turno.
     _r1_ack: str | None = None
     _r1_confirmed = False
+    _natural_reencauce: str | None = None  # Bloque 3: respuesta natural a no-respuesta del funnel
     try:
         from app.knowledge.route1_contextual import ROUTE1_ACK, resolve_route1
         from app.lead_memory.last_asked_field import read_current_asked_field_keys
@@ -1942,6 +2018,18 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                     lead_key, _fresh_keys, _r1["status"], _r1.get("field"),
                     _r1.get("value"), _r1.get("reason"),
                 )
+                # Bloque 3: negativa/lateral/absurda al campo preguntado → respuesta natural
+                # (LLM persona Mundo) que re-encauza, en vez de re-preguntar robótico. NO
+                # aplica si el mensaje trae pregunta de negocio (esa la resuelve el multi-intent).
+                from app.knowledge.current_turn import has_business_question as _hbq
+                if (_r1.get("reason") in {"negation", "no_number", "needs_clarification", "ambiguous"}
+                        and not _hbq(message, turn_signals)):
+                    _natural_reencauce = _build_natural_reencauce(
+                        _fresh_keys[0], message, str(_r1.get("reason"))
+                    )
+                    if _natural_reencauce:
+                        log.info("[NATURAL_REENCAUCE] lead=%s field=%s reason=%s",
+                                 lead_key, _fresh_keys[0], _r1.get("reason"))
     except Exception as exc:
         log.warning("[ROUTE1] omitido por error: %s", exc)
 
@@ -2005,7 +2093,12 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # Append one funnel profiling question after RAG, friendly, or profile ack.
     # Capture which canonical field(s) the nudge asked about (passive metadata).
     asked_field_keys: list[str] = []
-    if (rag_result is not None or friendly_result is not None or profile_ack_used or _r1_confirmed or _objection_fired) and not embedded_derived:
+    if _natural_reencauce:
+        # Bloque 3: la respuesta natural YA re-encauza el dato pendiente; es el reply
+        # completo, sin nudge robótico. El campo sigue pendiente (ROUTE1 no confirmó),
+        # así que el siguiente turno vuelve a intentar resolverlo.
+        reply = _natural_reencauce
+    elif (rag_result is not None or friendly_result is not None or profile_ack_used or _r1_confirmed or _objection_fired) and not embedded_derived:
         nudge, asked_field_keys = _build_funnel_nudge(
             message, contract, lead_memory_before,
             turn_signals=turn_signals, pre_validated_facts=_pre_validated,
