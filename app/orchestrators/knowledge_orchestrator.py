@@ -1371,83 +1371,13 @@ _ACK_INTROS = [
 
 
 def _build_profile_ack_reply(message: str) -> str | None:
-    """Build a short confirmation from facts explicitly stated in the message.
-
-    Returns None when the extractor finds nothing recognizable, letting the
-    caller fall through to whatever reply is appropriate.
-    """
-    try:
-        from app.lead_memory.profile_extractor import extract_profile_facts
-        raw = extract_profile_facts(message)
-    except Exception:
-        return None
-
-    if not raw:
-        return None
-
-    by_key = {f"{f['fact_group']}.{f['fact_key']}": f["fact_value"] for f in raw}
-    try:
-        from app.settings import AGE_DISQUALIFICATION_LIMIT
-        from app.knowledge.current_turn import age_disqualification_reply, _to_int
-        age_val = int(str(by_key.get("candidate.age") or "").strip())
-        if age_val >= AGE_DISQUALIFICATION_LIMIT:
-            return age_disqualification_reply(age_val)
-    except (ValueError, ImportError):
-        pass
-
-    parts: list[str] = []
-
-    # City
-    city = by_key.get("candidate.city")
-    if city:
-        parts.append(f"reside en {city}")
-
-    # License — merge category + validity into one phrase when both present
-    lic_cat = by_key.get("license.category")
-    lic_st = by_key.get("license.status")
-    if lic_cat and lic_st in {"vigente", "sí", "si"}:
-        parts.append(f"licencia federal tipo {lic_cat} vigente")
-    elif lic_cat:
-        parts.append(f"licencia federal tipo {lic_cat}")
-    elif lic_st in {"vigente", "sí", "si"}:
-        parts.append("licencia federal vigente")
-
-    # Apto médico
-    apto = by_key.get("medical.apto_status") or by_key.get("document.apto_status")
-    if apto in {"vigente", "sí", "si"}:
-        parts.append("apto médico vigente")
-
-    # Experience — vehicle_type + years
-    years = by_key.get("experience.years")
-    vt    = by_key.get("experience.vehicle_type")
-    vt_label = {"full": "tracto full", "sencillo": "sencillo"}.get(vt or "", vt or "")
-    if years and vt_label:
-        parts.append(f"{years} de experiencia en {vt_label}")
-    elif years:
-        parts.append(f"{years} de experiencia")
-    elif vt_label:
-        parts.append(f"experiencia en {vt_label}")
-
-    # Labor letters
-    labor = by_key.get("documents.labor_letters_status") or by_key.get("documents.labor_letters")
-    if labor in {"available", "sí", "si"}:
-        parts.append("cartas laborales disponibles")
-
-    # Age (mention only when accompanied by other facts to avoid bare "X años")
-    age = by_key.get("candidate.age")
-    if age and len(parts) >= 1:
-        parts.append(f"{age} años de edad")
-
-    if not parts:
-        return None
-
-    intro = random.choice(_ACK_INTROS)
-    if len(parts) == 1:
-        return f"{intro} {parts[0]}."
-    if len(parts) == 2:
-        return f"{intro} {parts[0]} y {parts[1]}."
-    listed = ", ".join(parts[:-1]) + f" y {parts[-1]}"
-    return f"{intro} {listed}."
+    """Acuse breve de un turno de dato de perfil. Sin eco de datos (feedback usuario
+    2026-07-03): devuelve un conector natural VARIADO; la siguiente pregunta la añade el
+    funnel nudge, y la descalificación por edad la resuelve `_next_funnel_question_or_none`.
+    Evita el re-extract (quitaba un TIPC redundante por turno) y el eco que llegó a
+    afirmar 'vigente' un dato ya vencido (bug smoke 2026-07-03)."""
+    from app.knowledge.current_turn import _FUNNEL_CONNECTORS
+    return random.choice(_FUNNEL_CONNECTORS)
 
 
 # ---------------------------------------------------------------------------
