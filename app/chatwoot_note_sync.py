@@ -48,7 +48,8 @@ OFFICIAL_LABELS: frozenset[str] = frozenset({
     "jerga_ambigua",
     "llamada_pendiente",
     "local_laguna",
-    "objetivo_full_sencillo",
+    "objetivo_full",
+    "objetivo_sencillo",
     "perfil_listo",
     "reingreso_verificar",
     "requiere_agente",
@@ -88,7 +89,8 @@ _LABEL_DISPLAY: dict[str, str] = {
     "considerar_escuelita_transmontes": "Considerar Escuelita Transmontes",
     "considerar_operador_b1":           "Considerar operador B1 (EUA)",
     "llamada_pendiente":                "Llamada pendiente",
-    "objetivo_full_sencillo":           "Objetivo full/sencillo",
+    "objetivo_full":                    "Objetivo full",
+    "objetivo_sencillo":                "Objetivo sencillo",
     "perfil_listo":                     "Perfil listo",
     "requiere_agente":                  "Requiere agente",
     "requiere_revision_ch":             "Requiere revisión CH",
@@ -341,7 +343,10 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
 
     # Tricotomía mutuamente excluyente: objetivo > no-objetivo > sin experiencia.
     if vehicle_confirmed:
-        labels.add("objetivo_full_sencillo")
+        # Label separado por unidad (full/sencillo); cualquiera de los dos completa
+        # el campo de unidad para perfil_listo. Se decide por el fact confirmado.
+        _vt = normalize_text(str(facts.get("experience.vehicle_type") or ""))
+        labels.add("objetivo_sencillo" if "sencillo" in _vt else "objetivo_full")
     elif has_non_target_experience:
         labels.update({"considerar_escuelita_transmontes", "requiere_agente", "requiere_revision_ch"})
     elif has_no_road_experience:
