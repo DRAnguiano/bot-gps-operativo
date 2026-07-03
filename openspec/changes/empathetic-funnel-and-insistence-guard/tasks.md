@@ -24,14 +24,16 @@
 
 - [ ] 4.1 Detector de ruego (LLM): familia/necesidad, apiádese, trabajo gratis, "lo consigo cuando me paguen", fotos irrelevantes.
 - [ ] 4.2 Estado por lead: `insistence_count`, `paused_until` (V2); disparo al "no tengo requisito" sin alternativa.
-- [ ] 4.3 Insistencias 1..5 → respuesta empática LLM; reset si aporta dato válido.
+- [ ] 4.3 Insistencias 1..5 → respuesta empática LLM; reset si aporta dato válido. SOLO cuentan ruegos/tonterías NO relacionadas con perfilamiento; dudas legítimas (pago, rutas) NO cuentan y se responden normal.
 - [ ] 4.4 5ª insistencia → mensaje empático final + `paused_until=now+1h`; `delivery_policy=suppress` mientras dure; preservar avance.
 - [ ] 4.5 Reanudar tras 1h desde donde quedó.
 - [ ] 4.6 Tests: 5 ruegos→pausa; reset por dato válido; no responde durante la hora; reanuda después.
 
-## 5. Nota/labels (opcional según open questions)
+## 5. Labels nuevos + derivaciones
 
-- [ ] 5.1 (Si se decide) label `pausado_por_insistencia` para Capital Humano; reflejar requisito-cumplido-por-alternativa en la nota.
+- [ ] 5.1 Añadir `insistencia` y `descartado_edad` a `OFFICIAL_LABELS` + display (usuario los crea en Chatwoot en paralelo).
+- [ ] 5.2 Aplicar `insistencia` al entrar en pausa; `descartado_edad` en el descarte por edad (hoy cierra sin label).
+- [ ] 5.3 Requisitos duros → derivar (`requiere_agente`/`requiere_revision_ch`), B1 → `considerar_operador_b1`; NO entran a la guardia de insistencia.
 
 ## 6. Validación
 

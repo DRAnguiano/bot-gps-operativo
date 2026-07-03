@@ -35,11 +35,18 @@ Si no tiene ni el documento ni la alternativa → entra la guardia de insistenci
 - **Respuestas LLM en el funnel** (voz/consistencia) → reusar la persona de Mundo + guardrails de vigencia; validar que no invente política.
 - **Costo LLM extra** en negativas → acotado (solo cuando no hay valor válido); no en el camino feliz.
 
-## Open Questions (para afinar contigo)
+## Decisiones resueltas (usuario, 2026-07-03)
 
-1. **Conteo de las 5**: ¿cuentan SOLO los mensajes de ruego/insistencia, o cualquier mensaje del candidato tras el "no tengo"? (propuesta: solo los que insisten sin aportar dato; un mensaje neutral no cuenta).
-2. **Durante la pausa de 1h**: ¿silencio total, o un único aviso "retomamos más tarde"? (propuesta: el mensaje empático final ya avisa; luego silencio).
-3. **Al reanudar tras 1h**: ¿el bot manda un mensaje proactivo ("¿seguimos?") o espera a que el candidato escriba? (propuesta: espera al candidato).
-4. **Comprobante de pago (licencia/apto)**: ¿basta con que lo mencione, o debe enviarlo (visión)? (liga con el cambio de Documentos/visión #17).
-5. **¿La pausa marca algún label** para Capital Humano (p. ej. `pausado_por_insistencia`) o queda invisible? 
-6. **Reingreso/otros requisitos duros** (B1, edad): ¿también entran a la guardia de insistencia, o esos derivan directo a humano sin contador?
+1. **Conteo de las 5 = SOLO insistencias/tonterías.** Solo cuentan mensajes de ruego o tonterías **no relacionadas con el perfilamiento**. Si el candidato pregunta cosas legítimas (dudas de pago, rutas, etc.) → NO cuenta y se responde normal (no avanza el contador ni pausa).
+2. **Durante la pausa: solo silencio** (tras el mensaje empático final).
+3. **Al reanudar tras 1h: el bot ESPERA** a que el candidato se vuelva a comunicar (sin mensaje proactivo).
+4. **Documentos = etapa contratada aparte (2 fases):** (a) perfilamiento por TEXTO (esta propuesta), (b) VISIÓN entiende los documentos enviados (liga con #17). En la fase visión: la Nota IA lista los documentos (INE, Licencia, …) y al subir uno el bot acusa específico ("gracias por subir tu INE, ahora falta la licencia…"). El **comprobante de pago** (licencia/apto no vigente) se **menciona** en fase texto; su verificación por imagen es fase visión.
+5. **Label de pausa = `insistencia`** (el usuario lo añade en Chatwoot; se agrega a `OFFICIAL_LABELS`).
+6. **Requisitos duros → derivan a Capital Humano** (no entran a la guardia de insistencia):
+   - Operadores de **otras vacantes** → derivar + label (`requiere_agente`/`requiere_revision_ch`).
+   - **B1** → igual, derivar + `considerar_operador_b1`.
+   - **Edad** fuera de perfil → **descarte directo** con su label (**`descartado_edad`**, NUEVO — hoy cierra sin label).
+
+## Labels nuevos a coordinar
+- **`insistencia`** — pausa por ruego. (usuario lo crea en Chatwoot; código lo agrega a `OFFICIAL_LABELS` + display).
+- **`descartado_edad`** — descarte por edad (hoy no existe label; la edad solo cierra el stage).
