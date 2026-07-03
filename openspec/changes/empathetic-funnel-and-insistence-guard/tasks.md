@@ -23,12 +23,13 @@
 
 ## 4. Guardia de ruego/insistencia + pausa 1h (D4/D5)
 
-- [ ] 4.1 Detector de ruego (LLM): familia/necesidad, apiádese, trabajo gratis, "lo consigo cuando me paguen", fotos irrelevantes.
-- [ ] 4.2 Estado por lead: `insistence_count`, `paused_until` (V2); disparo al "no tengo requisito" sin alternativa.
-- [ ] 4.3 Insistencias 1..5 → respuesta empática LLM; reset si aporta dato válido. SOLO cuentan ruegos/tonterías NO relacionadas con perfilamiento; dudas legítimas (pago, rutas) NO cuentan y se responden normal.
-- [ ] 4.4 5ª insistencia → mensaje empático final + `paused_until=now+1h`; `delivery_policy=suppress` mientras dure; preservar avance.
-- [ ] 4.5 Reanudar tras 1h desde donde quedó.
-- [ ] 4.6 Tests: 5 ruegos→pausa; reset por dato válido; no responde durante la hora; reanuda después.
+- [x] 4.1 Detección: reusa el disparo del reencauce (ROUTE1 no-confirmado + NO `has_business_question`) — cubre ruego/tontería/negativa. El detector LLM dedicado de "ruego" no fue necesario: cualquier no-respuesta sostenida cuenta (las dudas legítimas ya se excluyen por business-question).
+- [x] 4.2 Estado por lead en `rh_lead_facts_v2` (grupo `funnel`): `insistence_count`, `paused_until`. Módulo `app/knowledge/insistence_guard.py` (degradación segura).
+- [x] 4.3 Insistencias 1..5 → respuesta empática (Bloque 3); reset (`reset_insistence`) al confirmar dato válido (ROUTE1). Dudas legítimas NO cuentan (excluidas por `has_business_question`).
+- [x] 4.4 5ª insistencia → `_build_natural_reencauce(final=True)` (cierre empático sin re-preguntar) + `set_pause` (now+1h). El worker `tasks_chatwoot` corta ANTES de la extracción si `is_paused` → sin respuesta y SIN gastar LLM; avance preservado en facts.
+- [x] 4.5 Reanudar: pasada la hora, `is_paused=False` → el siguiente mensaje se procesa normal.
+- [x] 4.6 Tests verificados: 5 insistencias→count 1..5, 5ª pausa+mensaje final empático; reset por "llevo 20 años"→0; expiración de pausa→reanuda; módulo determinista (read/write/pause/reset).
+  - Pendiente menor: label `insistencia` al pausar → va en Bloque 5.
 
 ## 4b. Guardia anti-spam (D7, agnóstica de contenido)
 
