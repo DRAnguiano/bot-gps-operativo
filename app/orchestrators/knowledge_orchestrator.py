@@ -2075,8 +2075,13 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             turn_signals=turn_signals, pre_validated_facts=_pre_validated,
         )
         if _r1_confirmed:
-            # Ack del dato confirmado + siguiente pregunta (o solo ack si perfil completo)
-            reply = f"{_r1_ack}\n\n{nudge}" if nudge else (_r1_ack or "")
+            # Multi-intención (bug prod conv 159): si además de confirmar el dato hubo
+            # respuesta RAG a una pregunta embebida ("full pero ¿cuánto pagan?"), NO la
+            # descartes. Compón: ack del dato + respuesta a la pregunta + siguiente
+            # pregunta del funnel. Sin RAG, solo ack (+ nudge si hay).
+            _rag_ans = reply.strip() if (rag_result is not None and reply and reply.strip()) else ""
+            _parts = [p for p in (_r1_ack, _rag_ans, nudge) if p]
+            reply = "\n\n".join(_parts) if _parts else (_r1_ack or "")
         elif _objection_fired:
             # Acuse empático ya está en reply; agregar siguiente pregunta del funnel si hay
             if nudge:
