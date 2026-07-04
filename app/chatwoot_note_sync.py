@@ -38,6 +38,7 @@ OFFICIAL_LABELS: frozenset[str] = frozenset({
     "cecati_sugerido",
     "considerar_escuelita_transmontes",
     "considerar_operador_b1",
+    "descartado_edad",
     "documentos",
     "falta_apto",
     "falta_ciudad",
@@ -45,6 +46,7 @@ OFFICIAL_LABELS: frozenset[str] = frozenset({
     "falta_licencia",
     "falta_unidad",
     "foraneo",
+    "insistencia",
     "jerga_ambigua",
     "llamada_pendiente",
     "local_laguna",
@@ -68,6 +70,7 @@ TERMINAL_LABELS: frozenset[str] = frozenset({
     "requiere_revision_ch",
     "riesgo_alto",
     "reingreso_verificar",
+    "descartado_edad",
 })
 
 # Aliases fantasma → label oficial. La vista SQL `v_rh_work_queue.suggested_chatwoot_labels`
@@ -110,6 +113,8 @@ _LABEL_DISPLAY: dict[str, str] = {
     "seguimiento":                      "Seguimiento",
     "urgente":                          "Urgente",
     "bot_activo":                       "Bot activo",
+    "insistencia":                      "Insistencia",
+    "descartado_edad":                  "Descartado por edad",
 }
 
 
@@ -300,12 +305,27 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
     labels = {"bot_activo"}
 
     if _age_disqualified(facts):
-        return []
+        # Descarte por edad: label terminal (antes cerraba sin label alguno).
+        return ["descartado_edad"]
 
     if lead.get("requires_human"):
         labels.update({"requiere_agente", "requiere_revision_ch"})
     if (lead.get("risk_level") or "").lower() == "high":
         labels.add("riesgo_alto")
+
+    # Bloque 4/5: pausa por insistencia sostenida activa → label para Capital Humano.
+    # Se lee de facts (funnel.paused_until, ISO UTC); no requiere llamada extra.
+    _paused_until = str(facts.get("funnel.paused_until") or "").strip()
+    if _paused_until:
+        try:
+            import datetime as _dt
+            _pu = _dt.datetime.fromisoformat(_paused_until)
+            if _pu.tzinfo is None:
+                _pu = _pu.replace(tzinfo=_dt.timezone.utc)
+            if _pu > _dt.datetime.now(_dt.timezone.utc):
+                labels.add("insistencia")
+        except ValueError:
+            pass
 
     has_license    = bool(facts.get("license.category"))
     # has_medical: vigente explícito O tiene texto de vencimiento (incluye "al mismo tiempo...")
