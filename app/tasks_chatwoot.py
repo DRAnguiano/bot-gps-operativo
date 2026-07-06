@@ -405,6 +405,25 @@ def process_chatwoot_debounced_message(
                 "reason": "insistence_paused",
             }
 
+        # ── Bloque 4b: anti-spam / flood sostenido. El debounce ya coalesce ráfagas
+        # <6s; aquí se corta el flood sostenido (muchos turnos separados) con un
+        # cooldown por lead, SIN gastar LLM. Agnóstico de contenido. ────────────────
+        from app.knowledge import anti_spam
+        if anti_spam.is_flood_cooldown(_pause_lead_key) or anti_spam.register_and_check(_pause_lead_key):
+            import logging as _lg2
+            _lg2.getLogger(__name__).warning(
+                "[ANTISPAM_SUPPRESS] lead=%s conv=%s — flood/cooldown, sin respuesta",
+                _pause_lead_key, conversation_id,
+            )
+            return {
+                "status": "ok",
+                "processed": False,
+                "sent_to_chatwoot": False,
+                "batch_size": len(messages),
+                "combined_content": combined_content,
+                "reason": "antispam_flood",
+            }
+
         # ── 6.1: extracción única antes de bifurcar guard/orquestador ──────────
         from app.knowledge.turn_extractor import extract_turn, validate_extraction
         from app.knowledge.text_normalizer import normalize_text as _norm
