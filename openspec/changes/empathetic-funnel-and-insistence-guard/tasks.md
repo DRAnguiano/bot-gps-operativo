@@ -33,19 +33,19 @@
 
 ## 4b. Guardia anti-spam (D7, agnóstica de contenido)
 
-- [ ] 4b.1 Umbral por lead: N mensajes en T segundos (config) → coalescer en un solo turno; descartar duplicados idénticos.
-- [ ] 4b.2 NO generar una respuesta LLM por cada mensaje de una ráfaga (evita 429/latencia).
-- [ ] 4b.3 Flood sostenido → pausa temporal (reusa mecanismo de D4) + label opcional.
-- [ ] 4b.4 Tests: 8 msgs/15s → 1 turno; duplicados descartados; flood → pausa.
+- [x] 4b.1 Ráfagas cortas: ya cubiertas por el debounce (~6s coalesce + dedupe por message_id). Flood sostenido: nuevo módulo `app/knowledge/anti_spam.py` — ventana deslizante Redis por lead (12 turnos/60s, config por env `ANTISPAM_FLOOD_*`).
+- [x] 4b.2 Cooldown 300s al exceder el umbral: el worker corta ANTES de la extracción → cero llamadas LLM durante el flood.
+- [x] 4b.3 Flood sostenido → cooldown temporal (mismo patrón suppress que D4). Label no necesario: el cooldown es corto (5 min) y auto-expira; la pausa larga con label es la de insistencia.
+- [x] 4b.4 Verificado: flood dispara en el turno 13 (>12); cooldown suprime; expira limpio; degradación segura ante error de Redis.
 
 ## 5. Labels nuevos + derivaciones
 
-- [ ] 5.1 Añadir `insistencia` y `descartado_edad` a `OFFICIAL_LABELS` + display (usuario los crea en Chatwoot en paralelo).
-- [ ] 5.2 Aplicar `insistencia` al entrar en pausa; `descartado_edad` en el descarte por edad (hoy cierra sin label).
-- [ ] 5.3 Requisitos duros → derivar (`requiere_agente`/`requiere_revision_ch`), B1 → `considerar_operador_b1`; NO entran a la guardia de insistencia.
+- [x] 5.1 `insistencia` y `descartado_edad` en `OFFICIAL_LABELS` + display; `descartado_edad` también TERMINAL. (Usuario los crea en Chatwoot en paralelo — RECORDATORIO pendiente.)
+- [x] 5.2 `calculate_candidate_labels`: pausa activa (`funnel.paused_until` futuro, leído de facts) → `insistencia`; descarte por edad → `["descartado_edad"]` (antes cerraba sin label).
+- [x] 5.3 Verificado: B1 ya deriva (`considerar_operador_b1` + `requiere_agente`/`requiere_revision_ch`); edad se descarta ANTES del funnel (no entra a la guardia de insistencia).
 
 ## 6. Validación
 
-- [ ] 6.1 `openspec validate empathetic-funnel-and-insistence-guard` sin errores.
-- [ ] 6.2 Resolver open questions del design con el usuario antes de implementar el bloque 4.
-- [ ] 6.3 Suite en verde en contenedor; prueba en prod del flujo completo (negativa→alternativa→ruego→pausa).
+- [x] 6.1 `openspec validate empathetic-funnel-and-insistence-guard` sin errores.
+- [x] 6.2 Open questions resueltas con el usuario (2026-07-03) — ver design "Decisiones resueltas".
+- [ ] 6.3 Suite en verde en contenedor; prueba en prod del flujo completo (negativa→alternativa→ruego→pausa). PENDIENTE: correr suite completa + validación en prod real.
