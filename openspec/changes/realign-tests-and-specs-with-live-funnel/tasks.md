@@ -60,9 +60,9 @@
 
 ## 5. Infra del canary
 
-- [ ] 5.1 Montar `./openspec:/app/openspec:ro` en el servicio api-test (docker-compose).
-- [ ] 5.2 `test_core_consistency::test_live_specs_use_configured_age_limit` corre y pasa
-      (57 en spec == `AGE_DISQUALIFICATION_LIMIT`).
+- [x] 5.1 Montado `./openspec:/app/openspec:ro` en el servicio api-test (docker-compose).
+- [x] 5.2 `test_core_consistency.py` corre y pasa (6 passed) — 57 en spec ==
+      `AGE_DISQUALIFICATION_LIMIT`.
 
 ## 6. Housekeeping de changes stale
 

@@ -86,6 +86,7 @@ services:
       - ./app:/app/app:ro
       - ./tests:/app/tests:ro
       - ./scripts:/app/scripts:ro
+      - ./openspec:/app/openspec:ro
     networks:
       default:
 
