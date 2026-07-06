@@ -80,5 +80,7 @@
 
 ## 7. Validación final
 
-- [ ] 7.1 Suite completa en contenedor (`-m "not external_llm"`) → 0 FAILED.
-- [ ] 7.2 `openspec validate realign-tests-and-specs-with-live-funnel` sin errores.
+- [x] 7.1 Suite completa en contenedor (`-m "not external_llm"`) → **932 passed, 0 failed**
+      (1 deselected, 24 warnings, 1762.97s). Encontró y resolvió 26 fallas adicionales
+      más allá de las 40 iniciales (ver commit `6b32e06`), todas pre-existentes.
+- [x] 7.2 `openspec validate realign-tests-and-specs-with-live-funnel` sin errores.
