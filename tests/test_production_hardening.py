@@ -95,6 +95,13 @@ def client_empty_keys(monkeypatch):
 
 def importlib_reload(module):
     import importlib
+    # `app.app._validate_security_config` lee INTERNAL_API_KEY/REINDEX_API_KEY vía
+    # `from .settings import ...` — nombres resueltos contra el módulo `app.settings`
+    # YA IMPORTADO (congelados en su primer import). Recargar solo `app.app` no
+    # actualiza esos valores; hay que recargar `app.settings` primero para que
+    # relea los env vars fijados por monkeypatch en este test.
+    import app.settings
+    importlib.reload(app.settings)
     importlib.reload(module)
 
 
@@ -109,6 +116,12 @@ def test_ask_returns_401_when_key_wrong(client_with_keys):
 
 
 def test_ask_accepts_correct_key(monkeypatch):
+    # APP_ENV explícito (no producción): otros tests de este archivo hacen
+    # `importlib.reload(A)` con APP_ENV=production + key vacía, que hace RAISE a
+    # mitad del reload (deja el módulo en estado parcial). Fijar el valor aquí
+    # evita depender del orden de ejecución / reloads previos.
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("REINDEX_API_KEY", VALID_KEY)
     monkeypatch.setenv("CHATWOOT_WEBHOOK_TOKEN", TOKEN)
     monkeypatch.setenv("INBOUND_DEBOUNCE_ENABLED", "false")
     monkeypatch.setenv("WEBHOOK_RATE_LIMIT_ENABLED", "false")

@@ -53,10 +53,12 @@ def test_forbidden_from_known_facts_presence():
 
 
 def test_next_funnel_question_skips_forbidden():
-    facts: dict = {}  # sin facts: el primer paso sería city
-    assert IO.next_funnel_question(facts) == FUNNEL_CITY_Q
+    # candidate.name es el primer paso del funnel; con nombre ya conocido, city es
+    # el siguiente.
+    facts_with_name = {"candidate.name": "Juan Pérez"}
+    assert IO.next_funnel_question(facts_with_name) == FUNNEL_CITY_Q
     # con city prohibido (lo reclama/ya respondió), salta a la siguiente
-    nq = IO.next_funnel_question(facts, ["candidate.city"])
+    nq = IO.next_funnel_question(facts_with_name, ["candidate.city"])
     assert nq != FUNNEL_CITY_Q and nq is not None
 
 
@@ -133,10 +135,14 @@ def test_plan_does_not_repeat_answered_questions():
     # "si tengo cartas": registra documents.proof y NO repite lo ya respondido.
     enriched = _enriched([_answer("documents.proof", "cartas")])
     known = {
+        "candidate.name": "Juan Pérez",
+        "candidate.age": "35",
         "candidate.city": "Torreón",
         "experience.vehicle_type": "full",
-        "license.type": "E", "license.status": "vigente",
-        "medical.apto_status": "vigente",
+        # FUNNEL_STEPS ("license") requiere category+expiration_text; ("medical")
+        # requiere apto_expiration_text — no los alias license.type/apto_status.
+        "license.category": "E", "license.expiration_text": "vence en 1 año",
+        "medical.apto_expiration_text": "vence en 1 año",
         "experience.years": "10",
     }
     plan = IO.plan_and_respond(enriched, "si tengo cartas", known)

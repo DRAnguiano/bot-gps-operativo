@@ -32,10 +32,11 @@ def test_trace_has_all_audit_keys():
     assert TRACE_KEYS.issubset(out.keys())
 
 
-def test_empty_facts_next_is_city():
+def test_empty_facts_next_is_name():
+    # candidate.name es el primer campo del funnel (antes que ciudad).
     out = plan_turn({}, [], "hola")
-    assert out["next_question_field"] == "candidate.city"
-    assert len(out["missing_fields"]) == 6
+    assert out["next_question_field"] == "candidate.name"
+    assert len(out["missing_fields"]) == 8
     assert out["profile_ready"] is False
 
 
@@ -43,12 +44,16 @@ def test_empty_facts_next_is_city():
 
 def test_next_question_emits_asked_field_keys():
     out = plan_turn({}, [], "hola")
-    assert out["asked_field_keys"] == ASKED_FIELD_KEYS["candidate.city"]
+    assert out["asked_field_keys"] == ASKED_FIELD_KEYS["candidate.name"]
     assert out["next_question"]  # texto fijado por el sistema, no por el LLM
 
 
 def test_asked_field_keys_match_next_field():
-    facts = {"candidate.city": "Torreón"}  # siguiente faltante: vehicle_type
+    # Orden de FUNNEL_STEPS: name → city → age → license → vehicle_type → ...
+    facts = {
+        "candidate.name": "Juan Pérez", "candidate.city": "Torreón", "candidate.age": "35",
+        "license.category": "E", "license.expiration_text": "vence en 1 año",
+    }
     out = plan_turn(facts, [], "")
     assert out["next_question_field"] == "experience.vehicle_type"
     assert out["asked_field_keys"] == ASKED_FIELD_KEYS["experience.vehicle_type"]
@@ -77,13 +82,16 @@ def test_compound_extracts_all_and_does_not_reask_unit():
 
 def test_missing_fields_reflect_known_facts():
     facts = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreón",
         "experience.vehicle_type": "full",
         "experience.years": "10",
     }
     out = plan_turn(facts, [], "¿pero que mas le falta?")
-    # faltan los tres campos no provistos; los provistos no aparecen
-    assert set(out["missing_fields"]) == {"license", "medical.apto_status", "documents.proof"}
+    # faltan los campos no provistos; los provistos no aparecen
+    assert set(out["missing_fields"]) == {
+        "candidate.age", "license", "medical.apto_expiration_text", "documents.proof",
+    }
     assert "candidate.city" in out["completed_fields"]
 
 

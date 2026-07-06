@@ -45,9 +45,10 @@ def test_f26_nota_sin_temperatura():
 
 
 def test_f26_nota_conserva_secciones_clave():
-    # No regresión: las secciones operativas siguen presentes.
+    # No regresión: las secciones operativas vigentes (chatwoot-ai-note) siguen
+    # presentes. "Perfil confirmado"/"Embudo" son del contrato deprecado.
     nota = _nota_minima()
-    for seccion in ("👤 Contacto", "📋 Perfil confirmado", "📍 Embudo", "⏭️ Siguiente acción"):
+    for seccion in ("👤 Contacto", "📌 Estado del candidato", "⏭️ Siguiente acción"):
         assert seccion in nota
 
 

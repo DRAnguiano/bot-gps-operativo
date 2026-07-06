@@ -66,12 +66,17 @@
 
 ## 6. Housekeeping de changes stale
 
-- [ ] 6.1 Archivar `cumulative-ack-repetition-and-renewal-proof-not-detected` (su delta
-      contradictorio muere con el archive; trabajo integrado y superado por
-      empathetic-funnel).
-- [ ] 6.2 Archivar `funnel-naturalness-and-persona-voice`, `qwen-disable-reasoning` y
-      `groq-tpd-exhaustion-and-token-budget` (solo les falta verificación en vivo, cubierta
-      de facto por las pruebas de esta sesión; anotarlo en el cierre).
+- [x] 6.1 Archivado `cumulative-ack-repetition-and-renewal-proof-not-detected` SIN
+      sincronizar su delta (contradictorio, superseded por empathetic-funnel).
+- [x] 6.2 Sincronizados y archivados `funnel-naturalness-and-persona-voice`,
+      `qwen-disable-reasoning`, `groq-tpd-exhaustion-and-token-budget`. Cada requirement
+      se verificó contra código antes de sincronizar (no se sincronizó a ciegas):
+      `GROQ_LLM_HISTORY_TURNS` resultó NO implementado (env var muerto) — se sincronizó
+      corregido reflejando el mecanismo real (`messages[-4:]` fijo). Bug de parseo
+      pre-existente encontrado en el proceso: header rogue "## Requirements added in
+      funnel-objection-handling-and-ready-gating" ocultaba requirements de
+      `validate`/`list`/`archive` en 2 specs — corregido. `openspec validate --specs`:
+      22/22 (antes 20/22).
 
 ## 7. Validación final
 

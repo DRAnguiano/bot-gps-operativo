@@ -140,6 +140,10 @@ def test_pay_con_fuente_responde_y_continua_funnel(monkeypatch):
 # ── no deconstruir: intents RAG sin el flag conservan el fallback telefónico ──
 
 def test_logistics_sin_fuente_mantiene_fallback_telefonico(monkeypatch):
+    # El copy depende de is_business_hours (fuera de horario → llamada telefónica;
+    # en horario → "nuestro equipo confirma"). Se fija fuera de horario para que
+    # el test sea determinista sin importar la hora real de ejecución.
+    monkeypatch.setattr("app.knowledge.business_hours.is_business_hours", lambda: False)
     monkeypatch.setattr(IO, "retrieve_preferred_context", lambda *a, **k: _ctx_empty())
     monkeypatch.setattr(IO, "call_llm", lambda prompt: "NO DEBE LLAMARSE")
 

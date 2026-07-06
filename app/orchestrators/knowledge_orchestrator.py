@@ -1556,6 +1556,7 @@ _NO_FUNNEL_SIGNALS = frozenset({
 # confiable. Si una clave del step NO está aquí, el step no se registra
 # (no inventar, no mezclar legacy/canonical, no inferir desde texto).
 _FUNNEL_KEY_CANONICAL: dict[str, str] = {
+    "candidate.name": "candidate.name",
     "candidate.city": "candidate.city",
     "candidate.age": "candidate.age",
     "license.category": "license.type",

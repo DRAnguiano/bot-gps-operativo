@@ -68,7 +68,7 @@ def no_extraction(monkeypatch):
     )
     monkeypatch.setattr(
         "app.lead_memory.profile_extractor.extract_profile_facts",
-        lambda message, intent=None: [],
+        lambda message, intent=None, turn_signals=None: [],
     )
     # `_build_funnel_nudge` elige el texto con `random.choice(step["variants"])`. Fijarlo a
     # la primera variante hace deterministas estos tests: una variante de edad dice "edad"
@@ -85,14 +85,22 @@ def _facts(*pairs):
     ]}
 
 
-def test_nudge_first_step_returns_city_key(no_extraction):
+def test_nudge_first_step_returns_name_key(no_extraction):
     text, keys = KO._build_funnel_nudge("hola", {"intent": "info", "route": "rag"}, _facts())
+    assert text is not None
+    assert keys == ["candidate.name"]
+
+
+def test_nudge_city_step_returns_city_key(no_extraction):
+    mem = _facts(("candidate", "name", "Juan Pérez"))
+    text, keys = KO._build_funnel_nudge("ok", {"intent": "info", "route": "rag"}, mem)
     assert text is not None
     assert keys == ["candidate.city"]
 
 
 def test_nudge_age_step_returns_age_key(no_extraction):
     mem = _facts(
+        ("candidate", "name", "Juan Pérez"),
         ("candidate", "city", "Torreon"),
     )
     text, keys = KO._build_funnel_nudge("ok", {"intent": "info", "route": "rag"}, mem)
@@ -101,8 +109,12 @@ def test_nudge_age_step_returns_age_key(no_extraction):
     assert keys == ["candidate.age"]
 
 
-def test_nudge_license_step_records_type_and_expiration(no_extraction):
+def test_nudge_license_step_records_type(no_extraction):
+    # license.category y license.expiration_text son pasos SEPARADOS en _FUNNEL_STEPS
+    # (no un step combinado); sin license.category aún, el nudge pregunta primero
+    # el tipo de licencia (license.type), no la vigencia.
     mem = _facts(
+        ("candidate", "name", "Juan Pérez"),
         ("candidate", "city", "Torreon"),
         ("candidate", "age", "45"),
         ("experience", "vehicle_type", "full"),
@@ -110,11 +122,12 @@ def test_nudge_license_step_records_type_and_expiration(no_extraction):
     text, keys = KO._build_funnel_nudge("ok", {"intent": "info", "route": "rag"}, mem)
     assert text is not None
     assert "licencia" in text.lower()
-    assert keys == ["license.expiration_text", "license.type"]
+    assert keys == ["license.type"]
 
 
 def test_nudge_all_facts_no_nudge(no_extraction):
     mem = _facts(
+        ("candidate", "name", "Juan Pérez"),
         ("candidate", "city", "Torreon"),
         ("candidate", "age", "45"),
         ("license", "category", "E"),
@@ -123,7 +136,9 @@ def test_nudge_all_facts_no_nudge(no_extraction):
         ("medical", "apto_expiration_text", "vence en 1 año"),
         ("experience", "years", "5"),
         ("experience", "vehicle_type", "full"),
-        ("documents", "labor_letters_status", "disponibles"),
+        # documents.proof (no labor_letters_status) es el fact canónico que satisface
+        # el paso de documento laboral (Bloque 2, D3: cartas O semanas IMSS).
+        ("documents", "proof", "cartas"),
     )
     text, keys = KO._build_funnel_nudge("ok", {"intent": "info", "route": "rag"}, mem)
     assert text is None
@@ -160,7 +175,7 @@ def store_spies(monkeypatch):
     )
     monkeypatch.setattr(
         "app.lead_memory.profile_extractor.extract_profile_facts",
-        lambda message, intent=None: [],
+        lambda message, intent=None, turn_signals=None: [],
     )
     return saved, upserts
 

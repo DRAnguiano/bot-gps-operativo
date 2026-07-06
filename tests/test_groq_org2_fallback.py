@@ -109,7 +109,11 @@ def test_log_emitted_on_org2_fallback(capsys):
         )
 
     captured = capsys.readouterr()
-    assert "[groq-fallback] usando ORG2" in captured.out
+    # El log incluye la etapa que se agotó (p. ej. "BACKUP agotada, usando ORG2");
+    # verificamos la propiedad de dominio (se registró el fallback a ORG2), no el
+    # prefijo literal exacto.
+    assert "[groq-fallback]" in captured.out
+    assert "usando ORG2" in captured.out
 
 
 # ---------------------------------------------------------------------------
