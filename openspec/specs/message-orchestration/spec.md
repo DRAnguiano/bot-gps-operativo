@@ -733,8 +733,6 @@ como válido y MUST NOT meter al candidato en bucle.
 - **THEN** el vencimiento se acepta como válido (no se re-pregunta en bucle) y no se convierte en una fecha exacta inventada
 
 
-## Requirements added in funnel-objection-handling-and-ready-gating
-
 ### Requirement: Respuesta empática y personalizada ante negativa u objeción de un paso del funnel
 
 El orquestador SHALL responder con un acuse empático y personalizado cuando el
@@ -799,3 +797,54 @@ como válido y MUST NOT meter al candidato en bucle.
 #### Scenario: Vencimiento aproximado real se acepta
 - **WHEN** el candidato responde "se me vence aproximadamente en dos años"
 - **THEN** el vencimiento se acepta como válido (no se re-pregunta en bucle) y no se convierte en una fecha exacta inventada
+
+### Requirement: Acuse personalizado por nombre de pila la primera vez
+Cuando el nombre del candidato se conoce por primera vez en el turno (extraído de un documento por visión o respondido al funnel), el acuse del turno SHALL saludar con "Gracias, <nombre de pila>." una sola vez. En turnos posteriores, ya conocido el nombre, NO SHALL repetir el vocativo. Si no hay nombre disponible, el acuse SHALL omitir el vocativo sin fallar.
+
+#### Scenario: Primera vez que se conoce el nombre
+- **WHEN** el nombre es nuevo de este turno y hay un nombre de pila válido
+- **THEN** el acuse comienza con "Gracias, <nombre>." seguido de la siguiente pregunta del funnel
+
+#### Scenario: Nombre ya conocido en turnos posteriores
+- **WHEN** el nombre ya estaba establecido antes de este turno
+- **THEN** el acuse NO incluye el vocativo "Gracias, <nombre>."
+
+#### Scenario: Sin nombre disponible
+- **WHEN** no hay `candidate.name` disponible
+- **THEN** el acuse usa el texto genérico sin vocativo y no falla
+
+### Requirement: Pregunta de unidad sin redundancia
+La pregunta del funnel para el tipo de unidad (cuando aún no se conoce la licencia) SHALL mencionar la disponibilidad de vacantes una sola vez y luego preguntar, sin repetir "full o sencillo" dos veces.
+
+#### Scenario: Copy de unidad
+- **WHEN** el funnel pregunta el tipo de unidad sin licencia conocida
+- **THEN** el texto es "Le comento, actualmente tenemos vacantes para operador de tracto full y de sencillo. ¿En cuál tiene experiencia?" (una sola mención de full/sencillo)
+
+### Requirement: Mundo no se presenta como Capital Humano
+El system message del LLM de respuesta SHALL instruir a Mundo a hablar como parte del equipo de reclutamiento de Transmontes y a NUNCA presentarse al candidato como "Capital Humano". Las notas internas dirigidas al equipo ("Para Capital Humano") quedan fuera de este requisito.
+
+#### Scenario: Saludo del LLM
+- **WHEN** el LLM genera una respuesta de presentación o saludo
+- **THEN** se identifica como Mundo del equipo de Transmontes y no como "asistente de Capital Humano"
+
+#### Scenario: Intro público del primer reply
+- **WHEN** se antepone el intro de presentación (`ASSISTANT_PUBLIC_INTRO`) al primer reply de una conversación
+- **THEN** el texto identifica a Mundo como parte del equipo de Transmontes y NO como "asistente de Capital Humano"
+
+### Requirement: Generación sin razonamiento truncado
+Cuando el modelo de generación de respuestas es un modelo qwen *reasoning*, el sistema SHALL suprimir su modo de razonamiento (interruptor `/no_think`) para que la respuesta al candidato sea directa y completa, sin bloques de pensamiento ni respuestas truncadas dentro del razonamiento. La supresión SHALL estar condicionada al modelo (sin efecto en modelos no-qwen).
+
+#### Scenario: Respuesta directa con qwen
+- **WHEN** el generador es qwen y se produce una respuesta (friendly, RAG o embebida)
+- **THEN** el candidato recibe la respuesta directa, sin `<think>` ni contenido de razonamiento, y sin truncarse
+
+#### Scenario: Modelo no-qwen sin cambios
+- **WHEN** el generador NO es un modelo qwen reasoning
+- **THEN** no se aplica la supresión de razonamiento y el comportamiento no cambia
+
+### Requirement: Respuesta embebida limpia
+Cuando se produce una respuesta a la pregunta embebida de un mensaje compuesto (multi-intención), esta SHALL pasar por el mismo limpiador unificado que el resto de rutas, de modo que llegue sin artefactos de generación (bloque de razonamiento vacío, marcadores de blockquote).
+
+#### Scenario: Sin artefactos en la respuesta embebida
+- **WHEN** el generador emite un bloque de razonamiento vacío o marcadores de blockquote en la respuesta embebida
+- **THEN** el limpiador unificado los elimina antes de enviar al candidato

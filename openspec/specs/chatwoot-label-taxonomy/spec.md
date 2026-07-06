@@ -421,8 +421,6 @@ satisfecho ni como "Vigente".
 - **THEN** el apto NO se considera "Vigente", NO se aplica `perfil_listo` ni `requiere_revision_ch`, y el vencimiento del apto sigue contando como dato faltante
 
 
-## Requirements added in funnel-objection-handling-and-ready-gating
-
 ### Requirement: `perfil_listo` gatea sobre el funnel realmente completo
 
 El label `perfil_listo` (y su par `requiere_revision_ch`) SHALL activarse si y solo
