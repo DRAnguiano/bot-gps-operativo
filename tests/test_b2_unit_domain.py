@@ -57,9 +57,10 @@ def test_funnel_no_pregunta_vehicle_type_si_ya_esta():
 # ── ack visible al candidato ──────────────────────────────────────────────────
 
 def test_ack_sencillo_no_escuelita():
+    # Sin eco de datos (feedback 2026-07-03): el ack no repite "sencillo"; solo
+    # importa que no derive a escuelita.
     reply = build_current_turn_ack("manejo sencillo")
     assert "escuelita" not in reply.lower()
-    assert "sencillo" in reply.lower()
 
 
 def test_ack_sencillo_no_quinta_rueda_full():
@@ -67,9 +68,10 @@ def test_ack_sencillo_no_quinta_rueda_full():
     assert "quinta rueda/full" not in reply.lower()
 
 
-def test_ack_full_menciona_tracto_full():
+def test_ack_full_no_escuelita():
+    # Sin eco de datos: el ack no repite "tracto full"; solo importa que no derive
+    # a escuelita.
     reply = build_current_turn_ack("manejo full")
-    assert "tracto full" in reply.lower()
     assert "escuelita" not in reply.lower()
 
 

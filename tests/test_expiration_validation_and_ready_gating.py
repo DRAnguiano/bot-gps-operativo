@@ -103,10 +103,13 @@ def test_ack_no_confirma_vigente_sobre_no_respuesta():
 
 
 def test_ack_si_confirma_vencimiento_valido():
+    # Sin eco de datos (feedback 2026-07-03): un vencimiento válido de apto completa
+    # el perfil (ya no queda pregunta pendiente) → el ack es el cierre, sin repetir
+    # "vigente" como eco del dato.
     current = {"medical.apto_expiration_text": "vence en 2 años"}
     merged = {**_COMPLETE, **current}
     reply = build_current_turn_ack("vence en dos años", merged, pre_current_facts=current)
-    assert "apto médico vigente" in reply.lower()
+    assert "documentos" in reply.lower()  # cierre de perfil, siguiente paso
 
 
 # ── gate de perfil_listo (regresión del bug) ─────────────────────────────────

@@ -74,8 +74,12 @@ def _ctx(facts=None, requires_human=False, risk_level=None):
 
 
 _PERFIL_LISTO_FACTS = {
+    "candidate.name": "Juan Pérez",
+    "candidate.age": "35",
     "license.category": "E",
+    "license.expiration_text": "vence en 2 años",
     "medical.apto_status": "vigente",
+    "medical.apto_expiration_text": "vence en 1 año",
     "experience.vehicle_type": "full",
     "experience.years": "10 años",
     "documents.labor_letters_status": "available",
@@ -205,7 +209,7 @@ def test_note_shows_call_window_fuera():
 
 def test_note_shows_call_window_no_interpretable():
     note = _note_with_scheduling("unknown")
-    assert "no interpretable" in note.lower()
+    assert "por confirmar" in note.lower()
 
 
 def test_note_no_call_section_without_request():

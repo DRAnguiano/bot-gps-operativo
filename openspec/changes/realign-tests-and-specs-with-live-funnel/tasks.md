@@ -4,43 +4,59 @@
 
 ## 1. Specs (sincronizar la fuente de verdad)
 
-- [ ] 1.1 Aplicar delta `message-orchestration`: sustituir "Confirmación de datos sin
+- [x] 1.1 Aplicar delta `message-orchestration`: sustituir "Confirmación de datos sin
       duplicaciones" por "Acuse del funnel sin eco de datos" (+ cita de renovación en
       términos de dominio) — `openspec sync` o edición del spec principal según flujo.
-- [ ] 1.2 Aplicar delta `chatwoot-label-taxonomy`: `insistencia` + `descartado_edad`
-      (terminal) en el catálogo oficial del spec.
+- [x] 1.2 Aplicar delta `chatwoot-label-taxonomy`: `insistencia` + `descartado_edad`
+      (terminal) en el catálogo oficial del spec. Además se corrigió `objetivo_full_sencillo`
+      → `objetivo_full`/`objetivo_sencillo` (split ya vivo en código, spec estaba stale) en
+      catálogo, tabla de semántica, exclusividad mutua y tricotomía determinista.
 
 ## 2. Tests — voz sin eco (drift intencional nuevo)
 
-- [ ] 2.1 `test_current_turn_ack.py`: reescribir a propiedades (conector+pregunta, sin
+- [x] 2.1 `test_current_turn_ack.py`: reescrito a propiedades (conector+pregunta, sin
       valor del dato, saludo con nombre primera vez, cierre ligero sin "siempre que sigas
-      interesado").
-- [ ] 2.2 `test_ack_fresh_and_renewal_proof.py`: fresh-facts ahora significa "no eco de
-      nada"; renovación → copy de comprobante de pago en dominio (la parte de
-      `documents.renewal_proof` si/no se conserva tal cual — sigue vigente).
-- [ ] 2.3 `test_b2_unit_domain.py`, `test_first_contact_and_fact_guards.py`,
-      `test_expiration_validation_and_ready_gating.py`, `test_call_scheduling.py`:
-      actualizar asserts de ack/cierre a dominio.
-- [ ] 2.4 `test_funnel_vigencia_edad.py`: orden del funnel y regla B→sencillo se conservan;
-      renovación → comprobante de pago; descarte por edad → espera `["descartado_edad"]`.
-- [ ] 2.5 Correr el subconjunto de los 7 archivos en contenedor → 0 FAILED.
+      interesado"). 13 passed.
+- [x] 2.2 `test_ack_fresh_and_renewal_proof.py`: fresh-facts ahora significa "no eco de
+      nada"; `_RENEWAL_Q` fixture actualizado al copy vigente de comprobante de pago.
+      15 passed.
+- [x] 2.3 `test_b2_unit_domain.py` (29 passed), `test_first_contact_and_fact_guards.py`
+      (además se hicieron deterministas 3 tests de `TestAniosElipticos` que dependían de
+      una llamada LLM sin mockear — turn_signals inyectado explícito),
+      `test_expiration_validation_and_ready_gating.py` (31 passed),
+      `test_call_scheduling.py` (fixture `_PERFIL_LISTO_FACTS` incompleto —le faltaban
+      name/age/expiration_text, pre-existente; copy "no interpretable"→"por confirmar").
+- [x] 2.4 `test_funnel_vigencia_edad.py` (35 passed): causa raíz pre-existente — el funnel
+      pide `candidate.name` ANTES que ciudad y casi ningún fixture del archivo lo incluía;
+      además edad=52 estaba bajo el límite real (57) y "no tengo cartas" ahora persiste
+      "ninguno" (Bloque 2, D3) en vez de no persistir nada.
+- [x] 2.5 Los 7 archivos verificados individualmente en contenedor → 0 FAILED cada uno.
 
 ## 3. Tests — labels
 
-- [ ] 3.1 `test_candidate_labels.py`: catálogo esperado = actual (split full/sencillo, +
-      `insistencia`, + `descartado_edad`); casos: pausa activa → `insistencia`; pausa
-      expirada → sin `insistencia`; edad → `["descartado_edad"]`.
-- [ ] 3.2 Correr el archivo en contenedor → 0 FAILED.
+- [x] 3.1 `test_candidate_labels.py`: catálogo corregido a 27 (no 26 — error de conteo
+      propio corregido también en el spec); `TRICHOTOMY` con `objetivo_full`/
+      `objetivo_sencillo`; fixture de sufijo de estado corregido a alias reales del
+      catálogo (el caso con coma "Gómez Palacio, Durango" no es alias real).
+      **Bug de producción encontrado y corregido**: `calculate_candidate_labels` comparaba
+      la ciudad cruda contra el set canónico sin resolver alias primero (a diferencia de
+      `residency_is_local`) — candidatos que escriben "Torreón Coahuila"/"Cd. Lerdo" se
+      etiquetaban `foraneo` por error. Fix: `normalize_zm_laguna_city` antes de
+      `is_zm_laguna_canonical` en `chatwoot_note_sync.py` (2 sitios).
+- [x] 3.2 105 passed.
 
 ## 4. Tests — specs vigentes que los tests no siguieron (drift pre-existente)
 
-- [ ] 4.1 `test_admin_release.py`: fail-closed (spec production-security-baseline): sin
-      `INTERNAL_API_KEY` → 401; con key correcta → released. Eliminar la expectativa
-      "sin key → abierto".
-- [ ] 4.2 `test_chatwoot_note_renderer.py`: cabecera por escenario operativo (spec
-      chatwoot-ai-note), no cabecera fija; revisar los 9 asserts contra el formato canónico
-      del spec (secciones, orden, next-action única).
-- [ ] 4.3 Correr ambos archivos en contenedor → 0 FAILED.
+- [x] 4.1 `test_admin_release.py`: 2 tests reescritos a fail-closed real (key configurada +
+      header correcto); +1 test nuevo cubriendo explícitamente "key vacía → 401 siempre,
+      incluso con header". 4 passed.
+- [x] 4.2 `test_chatwoot_note_renderer.py`: el archivo entero probaba un contrato
+      DEPRECADO (`chatwoot-ai-note-contract`, superseded por `chatwoot-ai-note`) — secciones
+      "📋 Perfil confirmado"/"📍 Embudo" y `lead.next_best_action` ya no existen en el
+      renderer vivo. Reescritos los 9 asserts a las secciones vigentes (Estado del
+      candidato, Lo que ya sabemos, Falta confirmar, cabecera por escenario, next-action
+      determinista). Docstring del archivo actualizado.
+- [x] 4.3 35 passed (note_renderer) + 4 passed (admin_release).
 
 ## 5. Infra del canary
 

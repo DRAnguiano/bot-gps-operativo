@@ -6,7 +6,7 @@ import httpx
 from .db import get_conn
 from .knowledge.business_route_schema import VALID_VEHICLE_TYPES
 from .knowledge.current_turn import is_valid_expiration_text, profile_funnel_complete
-from .knowledge.geo_utils import is_zm_laguna_canonical
+from .knowledge.geo_utils import is_zm_laguna_canonical, normalize_zm_laguna_city
 from .knowledge.text_normalizer import normalize_text
 
 PENDING_TEXT = "Pendiente"
@@ -406,7 +406,10 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
     # Usa el catálogo ZML/Comarca (geo_utils) como fuente de verdad.
     city_raw = facts.get("candidate.city") or ""
     if city_raw:
-        if is_zm_laguna_canonical(city_raw):
+        # Resuelve alias del catálogo (p. ej. "Torreón Coahuila", "Cd. Lerdo") antes de
+        # comparar contra el set canónico; sin esto, alias reales del catálogo se
+        # etiquetaban foraneo por error (bug encontrado en auditoría 2026-07-06).
+        if is_zm_laguna_canonical(normalize_zm_laguna_city(city_raw)):
             labels.add("local_laguna")
         else:
             labels.update({"foraneo", "validar_traslado"})

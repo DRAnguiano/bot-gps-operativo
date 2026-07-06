@@ -20,6 +20,7 @@ import pytest
 import app.knowledge.current_turn as CT
 import app.orchestrators.knowledge_orchestrator as KO
 from app.lead_memory.profile_extractor import extract_profile_facts_as_dict
+from app.knowledge.turn_intent_classifier import TurnIntentSignals
 
 FB_ENTRY = "Me interesa la vacante de operador de quinta rueda"
 
@@ -322,19 +323,31 @@ class TestYaReclamoNoConfirma:
 
 class TestAniosElipticos:
     def test_numero_con_anos_tras_pregunta_de_experiencia(self):
-        facts = CT.extract_current_turn_facts("10 años", PREGUNTA_ANIOS)
+        facts = CT.extract_current_turn_facts(
+            "10 años", PREGUNTA_ANIOS, turn_signals=TurnIntentSignals(experience_context=True)
+        )
         assert facts.get("experience.years") == "10 años"
 
     def test_numero_solo_tras_pregunta_de_experiencia(self):
-        facts = CT.extract_current_turn_facts("10", PREGUNTA_ANIOS)
+        # `turn_signals` inyectado determinista: en vivo esta señal la calcula
+        # classify_turn_intent (LLM); aquí se fija para no depender de una llamada
+        # real y no-determinista en el test.
+        facts = CT.extract_current_turn_facts(
+            "10", PREGUNTA_ANIOS, turn_signals=TurnIntentSignals(experience_context=True)
+        )
         assert facts.get("experience.years") == "10 años"
 
     def test_numero_sin_contexto_no_se_guarda(self):
-        facts = CT.extract_current_turn_facts("10", "¿En qué ciudad te encuentras actualmente?")
+        facts = CT.extract_current_turn_facts(
+            "10", "¿En qué ciudad te encuentras actualmente?",
+            turn_signals=TurnIntentSignals(experience_context=False),
+        )
         assert "experience.years" not in facts
 
     def test_numero_tras_pregunta_de_ciudad_no_es_experiencia(self):
-        facts = CT.extract_current_turn_facts("10 años", None)
+        facts = CT.extract_current_turn_facts(
+            "10 años", None, turn_signals=TurnIntentSignals(experience_context=False)
+        )
         assert "experience.years" not in facts
 
 

@@ -10,14 +10,19 @@ decide labels.
 
 ## Catálogo operativo activo
 
-### Labels activas (24)
+### Labels activas (27)
 
 `aclaracion_pendiente`, `bot_activo`, `cecati_sugerido`,
-`considerar_escuelita_transmontes`, `considerar_operador_b1`, `documentos`, `falta_apto`,
-`falta_ciudad`, `falta_experiencia`, `falta_licencia`, `falta_unidad`, `foraneo`,
-`jerga_ambigua`, `llamada_pendiente`, `local_laguna`, `objetivo_full_sencillo`,
-`perfil_listo`, `reingreso_verificar`, `requiere_agente`, `requiere_revision_ch`,
-`riesgo_alto`, `seguimiento`, `urgente`, `validar_traslado`.
+`considerar_escuelita_transmontes`, `considerar_operador_b1`, `descartado_edad`,
+`documentos`, `falta_apto`, `falta_ciudad`, `falta_experiencia`, `falta_licencia`,
+`falta_unidad`, `foraneo`, `insistencia`, `jerga_ambigua`, `llamada_pendiente`,
+`local_laguna`, `objetivo_full`, `objetivo_sencillo`, `perfil_listo`,
+`reingreso_verificar`, `requiere_agente`, `requiere_revision_ch`, `riesgo_alto`,
+`seguimiento`, `urgente`, `validar_traslado`.
+
+> **Nota histórica**: `objetivo_full_sencillo` (label combinada) se retiró en favor de
+> `objetivo_full` + `objetivo_sencillo` (labels separadas por tipo de unidad confirmado),
+> para que Chatwoot pueda filtrar por unidad específica.
 
 ### Labels deprecadas — NO emitir
 
@@ -26,6 +31,7 @@ decide labels.
 | `cecati` | `cecati_sugerido` | Semántica difusa; eliminada de Chatwoot |
 | `escuelita` | `considerar_escuelita_transmontes` | Semántica ambigua; eliminada de Chatwoot |
 | `disponible_acudir` | (ninguna) | Legacy/diferido; fuera del profile core |
+| `objetivo_full_sencillo` | `objetivo_full` / `objetivo_sencillo` | Combinada; no permitía filtrar por unidad específica |
 
 El sistema SHALL NOT emitir labels deprecadas. `_filter_official_labels` las bloquea.
 
@@ -33,11 +39,14 @@ El sistema SHALL NOT emitir labels deprecadas. `_filter_official_labels` las blo
 
 | label | condición de emisión | exclusiva con |
 |---|---|---|
-| `objetivo_full_sencillo` | `experience.vehicle_type` confirmado como `full` o `sencillo` | `cecati_sugerido`, `considerar_escuelita_transmontes` |
-| `considerar_escuelita_transmontes` | `experience.non_target_vehicle_type` detectado (torton, rabón, reparto local, interurbano) | `objetivo_full_sencillo`, `cecati_sugerido` |
-| `cecati_sugerido` | candidato sin experiencia en carretera al que se orientó sobre CECATI | `objetivo_full_sencillo`, `considerar_escuelita_transmontes` |
+| `objetivo_full` | `experience.vehicle_type` confirmado como `full` | `objetivo_sencillo`, `cecati_sugerido`, `considerar_escuelita_transmontes` |
+| `objetivo_sencillo` | `experience.vehicle_type` confirmado como `sencillo` | `objetivo_full`, `cecati_sugerido`, `considerar_escuelita_transmontes` |
+| `considerar_escuelita_transmontes` | `experience.non_target_vehicle_type` detectado (torton, rabón, reparto local, interurbano) | `objetivo_full`, `objetivo_sencillo`, `cecati_sugerido` |
+| `cecati_sugerido` | candidato sin experiencia en carretera al que se orientó sobre CECATI | `objetivo_full`, `objetivo_sencillo`, `considerar_escuelita_transmontes` |
 | `considerar_operador_b1` | candidato potencial para vacante EUA/B1; requiere validación humana (inglés, documentos) | — |
 | `llamada_pendiente` | perfil listo o `requiere_agente` + candidato solicitó o se programó llamada | — |
+| `insistencia` | pausa activa por insistencia sostenida (`funnel.paused_until` en el futuro) | — |
+| `descartado_edad` | candidato fuera de perfil por edad (≥ límite configurado) | todas las demás (terminal) |
 
 > **Nota**: `considerar_escuelita_transmontes` NO convierte al candidato en objetivo full/sencillo.
 > Es una clasificación de derivación, no de confirmación de vacante.
@@ -94,25 +103,26 @@ labels.
 ### Requirement: Exclusividad mutua de labels
 
 El sistema SHALL tratar `local_laguna` y `foraneo` como mutuamente excluyentes.
-El sistema SHALL tratar `objetivo_full_sencillo`, `cecati_sugerido` y
-`considerar_escuelita_transmontes` como mutuamente excluyentes.
+El sistema SHALL tratar `objetivo_full`, `objetivo_sencillo`, `cecati_sugerido` y
+`considerar_escuelita_transmontes` como mutuamente excluyentes entre sí.
 
 #### Scenario: Ubicación
 - **WHEN** se aplica `local_laguna`
 - **THEN** no coexiste `foraneo` (y viceversa)
 
 #### Scenario: Objetivo de experiencia
-- **WHEN** se aplica `objetivo_full_sencillo`
-- **THEN** no coexisten `cecati_sugerido` ni `considerar_escuelita_transmontes`
+- **WHEN** se aplica `objetivo_full` u `objetivo_sencillo`
+- **THEN** no coexisten `cecati_sugerido` ni `considerar_escuelita_transmontes` ni la otra label de objetivo
 
 #### Scenario: Derivación no objetivo
 - **WHEN** se aplica `considerar_escuelita_transmontes`
-- **THEN** no coexiste `objetivo_full_sencillo` ni `cecati_sugerido`
+- **THEN** no coexiste `objetivo_full`, `objetivo_sencillo` ni `cecati_sugerido`
 
 ### Requirement: Labels terminales remueven bot_activo
 
 El sistema SHALL remover `bot_activo` al aplicar cualquiera de: `perfil_listo`,
-`requiere_agente`, `requiere_revision_ch`, `riesgo_alto`, `reingreso_verificar`.
+`requiere_agente`, `requiere_revision_ch`, `riesgo_alto`, `reingreso_verificar`,
+`descartado_edad`.
 La regla SHALL aplicarse en todo path de emisión, incluido el fallback.
 Cuando no hay label terminal presente, `bot_activo` SHALL conservarse.
 
@@ -134,6 +144,10 @@ Cuando no hay label terminal presente, `bot_activo` SHALL conservarse.
 
 #### Scenario: reingreso_verificar remueve bot_activo
 - **WHEN** se aplica `reingreso_verificar`
+- **THEN** el sistema remueve `bot_activo`
+
+#### Scenario: descartado_edad remueve bot_activo
+- **WHEN** se aplica `descartado_edad`
 - **THEN** el sistema remueve `bot_activo`
 
 #### Scenario: Sin terminales bot_activo permanece
@@ -286,30 +300,35 @@ existe en el catálogo).
 
 El sistema SHALL emitir exactamente una de las labels de experiencia-objetivo a partir de
 facts en Postgres, nunca del tono del LLM, y SHALL respetar su exclusividad mutua:
-- `objetivo_full_sencillo` cuando `experience.vehicle_type` esté confirmado como `full` o
-  `sencillo`;
+- `objetivo_full` cuando `experience.vehicle_type` esté confirmado como `full`;
+- `objetivo_sencillo` cuando `experience.vehicle_type` esté confirmado como `sencillo`;
 - `considerar_escuelita_transmontes` cuando exista `experience.non_target_vehicle_type`
   (torton/rabón/reparto local/interurbano) y NO haya unidad objetivo confirmada;
 - `cecati_sugerido` cuando exista la señal de ausencia de experiencia en carretera y NO haya
   unidad objetivo ni experiencia no-objetivo.
 
-SHALL NOT emitir dos de estas tres labels simultáneamente. SHALL NOT emitir las deprecadas
-`cecati` ni `escuelita`.
+SHALL NOT emitir dos de estas labels simultáneamente. SHALL NOT emitir las deprecadas
+`cecati`, `escuelita` ni `objetivo_full_sencillo`.
 
-#### Scenario: Unidad objetivo confirmada
-- **WHEN** `experience.vehicle_type` es `full` o `sencillo`
-- **THEN** se emite `objetivo_full_sencillo`
-- **AND** no se emite `cecati_sugerido` ni `considerar_escuelita_transmontes`
+#### Scenario: Unidad objetivo confirmada — full
+- **WHEN** `experience.vehicle_type` es `full`
+- **THEN** se emite `objetivo_full`
+- **AND** no se emite `objetivo_sencillo`, `cecati_sugerido` ni `considerar_escuelita_transmontes`
+
+#### Scenario: Unidad objetivo confirmada — sencillo
+- **WHEN** `experience.vehicle_type` es `sencillo`
+- **THEN** se emite `objetivo_sencillo`
+- **AND** no se emite `objetivo_full`, `cecati_sugerido` ni `considerar_escuelita_transmontes`
 
 #### Scenario: Experiencia en unidad no-objetivo
 - **WHEN** existe `experience.non_target_vehicle_type` y no hay unidad objetivo confirmada
 - **THEN** se emite `considerar_escuelita_transmontes`
-- **AND** no se emite `objetivo_full_sencillo` ni `cecati_sugerido`
+- **AND** no se emite `objetivo_full`, `objetivo_sencillo` ni `cecati_sugerido`
 
 #### Scenario: Sin experiencia en carretera
 - **WHEN** existe la señal de ausencia de experiencia en carretera y no hay unidad objetivo ni experiencia no-objetivo
 - **THEN** se emite `cecati_sugerido`
-- **AND** no se emite `objetivo_full_sencillo` ni `considerar_escuelita_transmontes`
+- **AND** no se emite `objetivo_full`, `objetivo_sencillo` ni `considerar_escuelita_transmontes`
 
 #### Scenario: Sin señal de experiencia no emite tricotomía
 - **WHEN** no hay unidad confirmada, ni experiencia no-objetivo, ni señal de ausencia de experiencia
@@ -442,3 +461,28 @@ satisfecho ni como "Vigente".
 #### Scenario: No-respuesta de vencimiento no cuenta como vigente ni marca listo
 - **WHEN** el candidato responde al vencimiento del apto con una no-respuesta (p. ej. "no sabría decirle") y por lo demás tendría el perfil completo
 - **THEN** el apto NO se considera "Vigente", NO se aplica `perfil_listo` ni `requiere_revision_ch`, y el vencimiento del apto sigue contando como dato faltante
+
+### Requirement: Labels de insistencia y descarte por edad
+
+El catálogo oficial SHALL incluir `insistencia` y `descartado_edad`.
+
+`insistencia` SHALL emitirse mientras el lead tenga una pausa por insistencia activa
+(`funnel.paused_until` en el futuro, fijada por la guardia de ruego tras 5 insistencias
+sin dato válido) para que Capital Humano vea el caso; al expirar la pausa el label SHALL
+dejar de emitirse en la siguiente proyección.
+
+`descartado_edad` SHALL emitirse cuando el candidato queda fuera de perfil por edad
+(≥ límite configurado) y SHALL ser terminal (remueve `bot_activo`). El descarte por edad
+SHALL NOT quedar sin rastro de label (comportamiento previo: cierre con lista vacía).
+
+#### Scenario: Pausa por insistencia activa
+- **WHEN** la guardia de insistencia pausó al lead y la pausa sigue vigente
+- **THEN** la proyección de labels incluye `insistencia`
+
+#### Scenario: Pausa expirada
+- **WHEN** la pausa por insistencia ya expiró
+- **THEN** la proyección de labels NO incluye `insistencia`
+
+#### Scenario: Descarte por edad con rastro
+- **WHEN** el candidato declara una edad en o sobre el límite configurado
+- **THEN** la proyección de labels es `descartado_edad` (terminal, sin `bot_activo`)
