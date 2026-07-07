@@ -24,12 +24,12 @@ determinista antes de persistirse; la visión NUNCA persiste directo.
 - **THEN** solo se extrae la vigencia; ningún dato clínico/diagnóstico se lee ni persiste
 
 ### Requirement: El documento prevalece sobre lo declarado, con marca para Capital Humano
-Cuando un dato leído de un documento (legible y validado) contradice el fact declarado
-por el candidato, el sistema SHALL actualizar el fact con el valor del documento (fuente
-`vision_document`), SHALL registrar la discrepancia en el expediente, SHALL mostrarla en
-la Nota IA (⚠️ con ambos valores) para revisión de Capital Humano, y SHALL avisar al
-candidato con tacto ofreciendo la alternativa aplicable (p. ej. comprobante de pago si la
-licencia resultó vencida). El sistema SHALL NOT decidir elegibilidad final (humano).
+El sistema SHALL actualizar el fact con el valor del documento (fuente `vision_document`)
+cuando un dato leído (legible y validado) contradice lo declarado por el candidato; SHALL
+registrar la discrepancia en el expediente, SHALL mostrarla en la Nota IA (⚠️ con ambos
+valores) para revisión de Capital Humano, y SHALL avisar al candidato con tacto ofreciendo
+la alternativa aplicable (p. ej. comprobante de pago si la licencia resultó vencida). El
+sistema SHALL NOT decidir elegibilidad final (humano).
 
 #### Scenario: Licencia declarada vigente, documento vencido
 - **WHEN** el candidato declaró licencia vigente pero el documento muestra vencimiento pasado
@@ -46,8 +46,8 @@ del documento con un acuse amable.
 - **THEN** se procesa igual que una foto (clasifica + extrae) y se acusa el documento
 
 ### Requirement: Extracción en shadow hasta pasar evaluación
-Hasta que el modelo de visión pase una evaluación con fotos reales (legibles y borrosas),
-la extracción de datos SHALL correr en modo shadow: registra el resultado en el expediente
+La extracción de datos SHALL correr en modo shadow hasta que el modelo de visión pase una
+evaluación con fotos reales (legibles y borrosas): registra el resultado en el expediente
 pero SHALL NOT sobreescribir facts declarados. El palomeo de recepción sí opera desde el
 inicio.
 
