@@ -130,9 +130,14 @@ LENGUAJE INFORMAL Y JERGA OPERATIVA (glosario derivado de chats reales):
 - Jerga de operación (solo para ENTENDER de qué habla; NO infieras negocio de estos términos):
   "tramo"=ruta; "circuito"=rutas FUERA del corredor principal (Monterrey–Laredo, Torreón–Saltillo–
   Monterrey–Laredo y el noreste); "de qué lado la ruedan"/"pa dónde sale"/"jalones"/"vuelta"/"viaje"
-  = habla de RUTAS; "caja seca"=tipo de remolque (NO es full ni sencillo, no lo pongas como
-  vehicle_type); "op"/"5ta rueda"/"trailero"/"trucker"=el oficio de operador; "pipi"/"orines"/"el
+  = habla de RUTAS; "op"/"5ta rueda"/"trailero"/"trucker"=el oficio de operador; "pipi"/"orines"/"el
   vaso"=antidoping.
+- Unidades en jerga: "doble articulado"/"doble" (como SU unidad) → repórtalo CRUDO en
+  vehicle_type ("doble articulado"); "caja seca" dicho como SU unidad → repórtalo CRUDO
+  ("caja seca"). El sistema los mapea (doble=full, caja seca suele ser sencillo).
+- "recién renovada"/"renovada" (licencia/apto) NO es un plazo de vencimiento: license.expiration_text
+  =null (el sistema preguntará cuándo vence). NO pierdas por eso los demás datos del mismo mensaje
+  (tipo de licencia, unidad).
 - OJO ambiguo: "pa arriba"/"pal norte" NO tienen destino fijo — pueden ser norte de México O EUA;
   NO los resuelvas a una ciudad/país ni asumas cruce fronterizo. Solo indican pregunta de rutas; el
   destino real se valida después. "MTY"=Monterrey, "NLD"=Nuevo Laredo como topónimos, pero como
@@ -158,6 +163,8 @@ Ejemplos:
 - "ai jalones pa arriba o puro cerka" → embedded_question="¿los viajes son largos o cortos?", has_embedded_question=true (NO resuelvas "pa arriba" a un destino)
 - "el pago anterior era semanal" → embedded_question=null, has_embedded_question=false (enunciado en pasado)
 - "mi ruta era nuevo laredo" → embedded_question=null, has_embedded_question=false; candidate.city=null (destino, no residencia)
+- "E doble articulado, recién renovada" (bot preguntó licencia) → license.category="E", experience.vehicle_type="doble articulado", license.expiration_text=null (renovada NO es plazo)
+- "manejo caja seca dese ace 5 años" → experience.vehicle_type="caja seca", experience.years="5"
 
 IMPORTANTE: Responde SOLO el JSON. value siempre es lo que el candidato DIJO, nunca una inferencia de negocio."""
 
@@ -338,6 +345,13 @@ def validate_extraction(
 
         # D3: texto libre sin anclaje (ni marcador ni respuesta a pregunta) → no promover
         if key in _FREE_TEXT_FIELDS and not (fv.explicit_marker or fv.answered_direct_question):
+            continue
+
+        # "recién renovada"/"renovada" NO es un plazo de vencimiento (regla 2026-07-07,
+        # conv 163): descartar como expiration para que el funnel pregunte cuándo vence,
+        # sin perder los demás campos del turno (categoría, unidad).
+        if key in {"license.expiration_text", "medical.apto_expiration_text"} and \
+                "renovad" in normalize_text(fv.value):
             continue
 
         # candidate.name — texto libre, descartar saludos/ruido

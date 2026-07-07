@@ -6,13 +6,17 @@
 
 ## 1. Glosario ampliado (bug vivo, sin Gemini)
 
-- [ ] 1.1 turn_extractor few-shots + profile_extractor: `doble articulado`/`doble` →
-      full; `caja seca` → sencillo (confianza 0.7); `recién renovada` → vigente
-      implícito (solo falta plazo). Tests con los casos exactos de conv 163.
-- [ ] 1.2 Seed Neo4j: aliases de vocabulario (doble articulado, doble, caja seca) —
-      solo lenguaje→concepto, sin política.
-- [ ] 1.3 Regresión: "E doble articulado, recién renovada" NO re-pregunta licencia ni
-      unidad; a lo más pregunta el plazo. Test end-to-end determinista.
+- [x] 1.1 `domain_catalog` (fuente única): `doble articulado`/`doble` → full CONFIRMED;
+      `caja seca` → sencillo CONFIRMED (la validación con el candidato la da el resumen
+      de confirmación del Bloque 2 — la "confianza 0.7" numérica no aplica con governed
+      writes OFF; desviación documentada). Prompt del turn_extractor: jerga de unidades
+      + regla "renovada NO es plazo" + few-shots de conv 163. Guard L2 determinista:
+      expiration_text con "renovad" se descarta sin perder los demás campos del turno.
+- [x] 1.2 Seed Neo4j: `doble` agregado a vehicle_full; nodo vehicle_sencillo NUEVO con
+      `caja seca` (confianza 0.75). Aplicado al Neo4j vivo y verificado.
+- [x] 1.3 Regresión conv 163 verde: "E doble articulado, recién renovada" → registra
+      E + full, y el funnel pregunta SOLO el plazo (no re-pregunta tipo ni unidad).
+      9 tests nuevos (test_glosario_unidades.py) + 41 de regresión sin romper.
 
 ## 2. Resumen de confirmación al cierre (D6)
 

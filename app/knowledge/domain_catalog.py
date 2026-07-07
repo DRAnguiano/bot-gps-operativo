@@ -39,9 +39,15 @@ VEHICLE_TERMS: dict[str, VehicleResolution] = {
     # Objetivo confirmado
     "full":         VehicleResolution("full", CONFIRMED, True, False, "full"),
     "fulero":       VehicleResolution("full", CONFIRMED, True, False, "full"),
+    # Regla de negocio 2026-07-07 (conv 163): "doble articulado"/"doble" = full.
+    "doble articulado": VehicleResolution("full", CONFIRMED, True, False, "doble_articulado"),
+    "doble":        VehicleResolution("full", CONFIRMED, True, False, "doble_articulado"),
     "sencillo":     VehicleResolution("sencillo", CONFIRMED, True, False, "sencillo"),
     "sensillo":     VehicleResolution("sencillo", CONFIRMED, True, False, "sencillo"),
     "censillo":     VehicleResolution("sencillo", CONFIRMED, True, False, "sencillo"),
+    # "caja seca" suele referir a sencillo (regla de negocio 2026-07-07); el resumen de
+    # confirmación del funnel lo valida con el candidato (red de seguridad).
+    "caja seca":    VehicleResolution("sencillo", CONFIRMED, True, False, "caja_seca"),
     # Compatible pero requiere aclaración full/sencillo (NO es vehicle_type final)
     "quinta rueda": VehicleResolution(None, NEEDS_CLARIFICATION, True, False, "quinta_rueda"),
     "5ta rueda":    VehicleResolution(None, NEEDS_CLARIFICATION, True, False, "quinta_rueda"),

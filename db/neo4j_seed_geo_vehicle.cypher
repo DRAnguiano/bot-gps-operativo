@@ -321,8 +321,20 @@ DETACH DELETE n;
 MERGE (n:VehicleType {id: 'vehicle_full'})
 SET n.canonical = 'full',
     n.category = 'double_trailer',
-    n.aliases = ['fulero', 'fulera', 'fuleros', 'doble articulado', 'remolque doble'],
+    // 'doble' agregado 2026-07-07 (regla de negocio conv 163: "doble" = full)
+    n.aliases = ['fulero', 'fulera', 'fuleros', 'doble articulado', 'doble', 'remolque doble'],
     n.profile_fact_group = 'experience',
     n.profile_fact_key = 'vehicle_type',
     n.profile_fact_value = 'full',
     n.confidence = 0.88;
+
+// 'caja seca' suele referir a sencillo (regla de negocio 2026-07-07); el resumen de
+// confirmación del funnel lo valida con el candidato. Solo vocabulario (lenguaje→concepto).
+MERGE (n:VehicleType {id: 'vehicle_sencillo'})
+SET n.canonical = 'sencillo',
+    n.category = 'single_trailer',
+    n.aliases = ['sensillo', 'censillo', 'caja seca'],
+    n.profile_fact_group = 'experience',
+    n.profile_fact_key = 'vehicle_type',
+    n.profile_fact_value = 'sencillo',
+    n.confidence = 0.75;
