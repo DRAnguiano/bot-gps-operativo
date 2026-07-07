@@ -5,18 +5,27 @@
 
 ## 1. Registro de expediente + palomeo (sin extracción aún)
 
-- [ ] 1.1 Módulo `expediente` (facts grupo `expediente.*`): estados por documento,
-      helpers read/write, dedupe por tipo (última versión gana). Tests unitarios.
-- [ ] 1.2 Clasificador de tipo de documento en visión (prompt JSON: tipo + legible),
-      validación determinista del catálogo de 12 tipos. Tests con fixtures.
-- [ ] 1.3 Rama media de `app.py`: al procesar imagen, registrar
-      `expediente.<tipo>.status=recibido` + metadata del adjunto en `external_metadata`.
-- [ ] 1.4 Extractor de texto: "tengo mi <doc>" → `expediente.<tipo>.status=declarado`
-      (declarar ≠ enviar). Tests.
-- [ ] 1.5 Sección "📄 Documentos" en la Nota IA (checklist 10 docs, estados, pendientes
-      compactados). Tests del renderer.
-- [ ] 1.6 Acuse por documento con faltantes (copy LLM variado sobre datos deterministas).
-      Tests + verificación en vivo.
+- [x] 1.1 Módulo `app/lead_memory/expediente.py`: catálogo 12 tipos, estados, helpers,
+      dedupe por tipo (upsert único = última gana), degradación segura. 15 tests.
+- [x] 1.2 Clasificador: `_VISION_PROMPT_IMAGE` emite `tipo_documento`/`legible`;
+      `parse_vision_classification` (determinista, nunca inventa; fuera de catálogo →
+      None) separa la clasificación del texto de perfilamiento. 5 tests.
+- [x] 1.3 `app.py` rama visión: parsea clasificación, `vision_doc` viaja en el item
+      encolado; el worker registra `expediente.<tipo>.status` + trazabilidad vía fact
+      `expediente.<tipo>.source_message_id` (equivalente a external_metadata del mensaje:
+      misma auditabilidad sin threading de 3 firmas — desviación documentada del spec).
+      Documento sin texto de perfilamiento (CURP, ilegible) ya NO cae al media guard
+      enlatado: se encola con marcador y recibe acuse.
+- [x] 1.4 Estado "declarado" DERIVADO de facts de perfil existentes (`derive_declared`:
+      license.category→licencia, apto_expiration→apto, documents.proof→cartas/IMSS,
+      renewal_proof→comprobante de pago) — sin duplicar extracción de texto. Tests.
+- [x] 1.5 Sección "📄 Documentos (expediente)" en Nota IA (escenarios perfilamiento y
+      perfil-listo): estados por renglón, dato leído, ⚠️ discrepancias, pendientes
+      compactados en una línea. 4 tests + 35 del renderer sin regresión.
+- [x] 1.6 `build_acuse`: contenido determinista (recibidos/ilegibles/faltantes) +
+      redacción LLM voz Mundo con fallback determinista; override del reply en el worker
+      (`[EXPEDIENTE_ACUSE]`, gana sobre guard). 2 tests fallback. Media guard: 28 tests
+      sin regresión. Verificación en vivo con imagen real → pendiente en 6.3.
 
 ## 2. Privacidad y consentimiento (paralelo, bloqueante para producción)
 

@@ -424,6 +424,32 @@ def process_chatwoot_debounced_message(
                 "reason": "antispam_flood",
             }
 
+        # ── Expediente (document-expediente-vision-v2 B1): registrar la recepción de
+        # documentos clasificados por visión ANTES del orquestador (así la Nota IA del
+        # turno ya los ve). La imagen nunca se persiste; solo estado + trazabilidad
+        # (source_message_id). El acuse se compone después del reply. ────────────────
+        _docs_received_now: list[str] = []
+        _docs_ilegible_now: list[str] = []
+        for _it in messages:
+            _vd = _it.get("vision_doc") or {}
+            _vd_tipo = _vd.get("tipo")
+            if not _vd_tipo:
+                continue
+            from app.lead_memory.expediente import mark_received as _exp_mark
+            _vd_legible = bool(_vd.get("legible", True))
+            if _exp_mark(_pause_lead_key, _vd_tipo, legible=_vd_legible):
+                (_docs_received_now if _vd_legible else _docs_ilegible_now).append(_vd_tipo)
+                try:
+                    from app.lead_memory.repository import upsert_lead_fact as _exp_up
+                    _exp_up(
+                        lead_key=_pause_lead_key, fact_group="expediente",
+                        fact_key=f"{_vd_tipo}.source_message_id",
+                        fact_value=str(_it.get("message_id") or ""),
+                        confidence=1.0, source="vision_document",
+                    )
+                except Exception:
+                    pass
+
         # ── 6.1: extracción única antes de bifurcar guard/orquestador ──────────
         from app.knowledge.turn_extractor import extract_turn, validate_extraction
         from app.knowledge.text_normalizer import normalize_text as _norm
@@ -685,6 +711,32 @@ def process_chatwoot_debounced_message(
                 ),
                 flush=True,
             )
+
+        # ── Expediente B1: si este turno recibió documento(s), el reply es el ACUSE
+        # específico (nombra lo recibido + qué falta / pide re-toma si ilegible),
+        # no la respuesta genérica del pipeline. Datos deterministas del registro;
+        # redacción LLM con fallback. ────────────────────────────────────────────
+        if _docs_received_now or _docs_ilegible_now:
+            try:
+                from app.lead_memory.expediente import build_acuse as _exp_acuse
+                _facts_now = {
+                    f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+                    for r in (pre_memory.get("facts") or []) if r.get("fact_value")
+                }
+                for _t in _docs_received_now:
+                    _facts_now[f"expediente.{_t}.status"] = "recibido"
+                for _t in _docs_ilegible_now:
+                    _facts_now[f"expediente.{_t}.status"] = "ilegible"
+                _acuse = _exp_acuse(_facts_now, _docs_received_now, _docs_ilegible_now)
+                if _acuse:
+                    result["reply"] = _acuse
+                    import logging as _lg3
+                    _lg3.getLogger(__name__).info(
+                        "[EXPEDIENTE_ACUSE] lead=%s recibidos=%s ilegibles=%s",
+                        _pause_lead_key, _docs_received_now, _docs_ilegible_now,
+                    )
+            except Exception:
+                traceback.print_exc()
 
         reply = (result.get("reply") or result.get("text") or "").strip()
         reply = _maybe_prepend_first_reply_intro(

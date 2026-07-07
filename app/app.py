@@ -1140,6 +1140,9 @@ async def chatwoot_webhook(
 
     # ── media_guard (G4): attachments → rama audio (transcripción) o reject genérico ──
     # Va ANTES de empty_content: los mensajes solo-media traen content vacío.
+    # vision_doc: clasificación del documento del expediente (si el adjunto es uno);
+    # viaja en el item encolado para que el worker registre la recepción y acuse.
+    vision_doc: dict | None = None
     _audio_url = _detect_audio_url(payload)
     if _audio_url or _chatwoot_has_media(payload):
         if not account_id or not conversation_id:
@@ -1261,9 +1264,22 @@ async def chatwoot_webhook(
                     flush=True,
                 )
 
-                if len(vision_text) >= 3:
+                # Expediente (document-expediente-vision-v2 B1): separar la clasificación
+                # tipo_documento/legible del texto de perfilamiento. El registro y el
+                # acuse los hace el worker (vision_doc viaja en el item encolado).
+                from .lead_memory.expediente import parse_vision_classification
+                _clean_text, _doc_tipo, _doc_legible = parse_vision_classification(vision_text)
+                if _doc_tipo:
+                    vision_doc = {"tipo": _doc_tipo, "legible": _doc_legible}
+
+                if len(_clean_text) >= 3:
                     # Texto válido → sobreescribir content y continuar el pipeline normal
-                    content = vision_text
+                    content = _clean_text
+                elif _doc_tipo:
+                    # Documento del expediente sin texto de perfilamiento (p. ej. CURP,
+                    # o ilegible): encolar con marcador neutro; el worker registra la
+                    # recepción y responde el acuse (no el media guard enlatado).
+                    content = "[documento recibido]"
                 else:
                     # Visión no devolvió nada útil → fallback acotado y cortar
                     sent = False
@@ -1387,6 +1403,7 @@ async def chatwoot_webhook(
                     "phone": contact.get("phone"),
                     "channel_label": channel_label,
                     "content": content,
+                    "vision_doc": vision_doc,
                 }
             )
 

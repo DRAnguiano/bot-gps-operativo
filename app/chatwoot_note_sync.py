@@ -508,6 +508,39 @@ def _nota_header(scenario: str) -> str:
     return f"🤖 Nota IA: {scenario}"
 
 
+def _documentos_expediente_block(facts: dict[str, Any]) -> str:
+    """Sección '📄 Documentos (expediente)' — checklist de 10 renglones desde el
+    registro (facts expediente.* + declaraciones derivadas). Pendientes compactados
+    en una línea; discrepancias con ⚠️. Termina en doble salto (patrón de bloques)."""
+    from app.lead_memory.expediente import expediente_snapshot
+
+    rows = expediente_snapshot(facts)
+    _status_display = {
+        "declarado": "declarado — falta enviar",
+        "recibido": "recibido ✓",
+        "analizado": "analizado ✓",
+        "ilegible": "recibido · ilegible, pedir re-toma",
+    }
+    lines: list[str] = []
+    pendientes: list[str] = []
+    discrepancias: list[str] = []
+    for row in rows:
+        status = row["status"]
+        if status == "pendiente":
+            pendientes.append(row["display"])
+            continue
+        line = f"{row['display']}: {_status_display.get(status, status)}"
+        if row["dato"]:
+            line += f" · {row['dato']}"
+        lines.append(line)
+        if row["discrepancia"]:
+            discrepancias.append(f"⚠️ {row['display']}: {row['discrepancia']}")
+    if pendientes:
+        lines.append("Pendientes: " + " · ".join(pendientes))
+    lines.extend(discrepancias)
+    return "📄 Documentos (expediente)\n" + "\n".join(lines) + "\n\n"
+
+
 def _nota_contacto(lead: dict[str, Any], facts: dict[str, Any] | None = None) -> str:
     # Nombre solo desde facts['candidate.name']; nunca desde Telegram/WhatsApp display_name
     name_val = (facts or {}).get("candidate.name") or "No disponible"
@@ -754,6 +787,11 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             f"{_next_action_dinamica(facts, is_local, lbl)}"
         )
 
+    # 📄 Documentos del expediente (document-expediente-vision-v2 B1): checklist
+    # derivado del registro (facts expediente.*) — nunca del texto libre del LLM.
+    # Pendientes compactados en una línea para no inflar la nota.
+    documentos_block = _documentos_expediente_block(facts)
+
     # 4.3 Perfil listo local / 4.4 Perfil listo foráneo
     if nucleo_completo:
         doc_display = "Cartas laborales o semanas cotizadas del IMSS" if is_local else "2 cartas laborales membretadas"
@@ -774,6 +812,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             f"Apto médico: {_apto_status_display(medical_status_raw, apto_exp_text)}" + (f" · {_exp_display(apto_exp_text)}" if apto_exp_text else "") + "\n"
             f"Documento laboral: {doc_display}\n"
             f"{traslado_line}\n"
+            + documentos_block
             + llamada_block +
             "👥 Para Capital Humano\n"
             "Validar documentos y continuar proceso de contratación.\n"
@@ -841,6 +880,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
         f"{estado}\n\n"
         + sabemos_block
         + falta_block
+        + documentos_block
         + llamada_block
         + "👥 Para Capital Humano\n"
         "Esperar a que el candidato complete su perfil.\n"
