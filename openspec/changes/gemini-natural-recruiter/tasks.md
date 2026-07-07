@@ -17,6 +17,14 @@
 - [x] 1.3 Regresión conv 163 verde: "E doble articulado, recién renovada" → registra
       E + full, y el funnel pregunta SOLO el plazo (no re-pregunta tipo ni unidad).
       9 tests nuevos (test_glosario_unidades.py) + 41 de regresión sin romper.
+- [x] 1.4 Hallazgo en vivo 2026-07-07: "soy de aquí de Torreano" (typo) se registró
+      literal en vez de resolverse a la ciudad mexicana real. Corrección vía PROMPT
+      (no diccionario/regex — feedback explícito del usuario: el LLM ya entiende
+      geografía, ver memoria feedback_prompt_over_dictionary): candidate.city
+      prioriza SIEMPRE lectura mexicana sobre extranjera de ortografía parecida;
+      EEUU solo válido con mención de B1 en el turno; sin lectura mexicana plausible
+      → null (no inventa). 3 few-shots nuevos. geo_utils.py sin cambios (el intento
+      de guard determinista fue revertido). 21 tests de regresión verdes.
 
 ## 2. Resumen de confirmación al cierre (D6)
 
