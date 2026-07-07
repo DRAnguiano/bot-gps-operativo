@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, ORJSONResponse
 from pydantic import BaseModel
 
 import asyncio
-from .indexer import build_index, call_llm, retrieve_context_for_guardrail, _to_int, call_groq_transcribe, call_groq_vision
+from .indexer import build_index, call_llm, retrieve_context_for_guardrail, _to_int
 from .graphs.hr_graph import run_hr_graph_message
 from .db import get_conn, make_conversation_key
 from .persona_config import SYSTEM_PROMPT
@@ -1159,13 +1159,21 @@ async def chatwoot_webhook(
                     resp = await hc.get(_audio_url, headers=headers)
                     resp.raise_for_status()
                     audio_bytes = resp.content
-                # filename con extensión para que Whisper detecte el codec
-                # .oga (WhatsApp) no está en la lista de Groq; se normaliza a .ogg (mismo codec)
-                fname = _audio_url.split("?")[0].split("/")[-1] or "audio.ogg"
-                if fname.endswith(".oga"):
-                    fname = fname[:-4] + ".ogg"
+                # Gemini audio nativo (gemini-full-provider-migration B5): transcribe
+                # con el glosario trailero en el prompt — cierra el bug de Whisper
+                # "fulero"→"futbol" (conv 163). mime_type desde la extensión.
+                _aname = _audio_url.split("?")[0].split("/")[-1].lower()
+                if _aname.endswith((".mp3",)):
+                    _amime = "audio/mp3"
+                elif _aname.endswith((".wav",)):
+                    _amime = "audio/wav"
+                elif _aname.endswith((".m4a", ".aac")):
+                    _amime = "audio/aac"
+                else:  # .ogg / .oga (Telegram/WhatsApp) y default
+                    _amime = "audio/ogg"
+                from app.gemini_client import dispatch_audio
                 transcribed_text = await asyncio.to_thread(
-                    call_groq_transcribe, audio_bytes, fname
+                    dispatch_audio, audio_bytes, mime_type=_amime
                 )
             except Exception as exc:
                 transcribe_error = str(exc)
@@ -1237,9 +1245,8 @@ async def chatwoot_webhook(
                         mime_type = "image/gif"
                     else:
                         mime_type = "image/jpeg"
-                    # Fase G1 (gemini-natural-recruiter): dispatch por función,
-                    # LLM_VISION_PROVIDER=gemini activa el cutover con fallback
-                    # automático a call_groq_vision (sin cambio hasta activarlo).
+                    # Visión Gemini-único (gemini-full-provider-migration): ante
+                    # fallo el dispatch devuelve '' → media guard acotado.
                     from app.gemini_client import dispatch_vision
                     from app.indexer import _VISION_PROMPT_IMAGE, _VISION_PROMPT_STICKER
                     _vision_prompt = _VISION_PROMPT_STICKER if att_kind == "sticker" else _VISION_PROMPT_IMAGE

@@ -104,5 +104,9 @@ prompt), léxico de vigencia (validador regex post-generación se mantiene).
 
 1. ¿Cuándo se contrata el tier pago de Gemini? (Bloquea el retiro físico D7 para
    producción real; en staging se puede completar todo con free tier + cadencia.)
-2. ¿`business_route_classifier` (hoy shadow) se migra o se elimina si el purpose
-   extractor lo vuelve redundante?
+2. ~~¿business_route_classifier se migra o se elimina?~~ **RESUELTA (usuario,
+   2026-07-07): se RETIRA.** Era código huérfano (ningún caller vivo) y su contrato
+   lo definía como shadow, no canal principal. El extractor unificado manda. Su
+   capability se marca REMOVED (delta en este change); `business_route_schema` se
+   conserva (catálogo usado por chatwoot_note_sync); el harness QA de la matriz de
+   72 casos se repunta al extractor unificado en el gate 4.2.

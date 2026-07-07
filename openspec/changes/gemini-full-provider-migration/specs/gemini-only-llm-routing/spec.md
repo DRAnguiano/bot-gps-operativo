@@ -13,10 +13,10 @@ Gemini (`GEMINI_MODEL`, `GEMINI_MAX_TOKENS`, `GEMINI_TEMPERATURE`,
 - **THEN** la llamada JSON va a Gemini con thinkingBudget=0 y ninguna función Groq
   se invoca
 
-#### Scenario: Retiro físico del entorno Groq
+#### Scenario: Retiro físico de los proveedores anteriores
 - **WHEN** la migración se completa y verifica en vivo
-- **THEN** `call_groq_*`, el cliente groq y las env `GROQ_*` ya no existen en el
-  código ni en `.env`
+- **THEN** `call_groq_*`/`call_cohere_llm`, los clientes groq/cohere y las env
+  `GROQ_*`/`COHERE_*` ya no existen en el código ni en `.env`
 
 ### Requirement: Degradación por contrato de error, sin proveedor alterno
 Ante fallo de Gemini (429/timeout/HTTP/vacío), cada dispatch SHALL degradar con el

@@ -774,6 +774,14 @@ def _should_use_friendly_llm(message: str, contract: dict[str, Any]) -> bool:
         return True
     if route == "fallback" and intent == "unknown":
         return True
+    # Aflojado 2026-07-07 (decisión del usuario: "quitar respuestas predeterminadas,
+    # dar más poder al LLM"): cualquier turno que llegue aquí (no requires_rag, no
+    # local_time, no chiste — ya resueltos por ramas anteriores del dispatch) y no
+    # tenga una rama dedicada más abajo (greeting, candidate_profile_signal) ni pida
+    # aclaración explícita, se responde con el LLM cálido en vez del texto enlatado
+    # de _controlled_reply_from_contract (CONTROLLED_FALLBACK_REPLY genérico).
+    if intent not in {"greeting", "candidate_profile_signal"} and not contract.get("requires_clarification"):
+        return True
     return False
 
 
@@ -1442,9 +1450,9 @@ def _build_natural_reencauce(field: str, message: str, reason: str, final: bool 
             "Nunca uses la palabra 'caduca'."
         )
     try:
-        from app.indexer import call_groq_with_system
+        from app.gemini_client import dispatch_generation
         from app.persona_config import SYSTEM_PROMPT
-        out = call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.55, max_tokens=200)
+        out = dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.55, max_tokens=200)
         return (out or "").strip() or None
     except Exception as exc:
         log.warning("[NATURAL_REENCAUCE] generación falló: %s", exc)
@@ -1744,9 +1752,15 @@ def _build_funnel_nudge(
     # reglas del funnel canónico (p. ej. comprobante de pago por licencia/apto vencido).
     # Si el funnel del guard SÍ tiene una pregunta pendiente, emítela para no dejar el
     # turno en un conector suelto ("Muy bien.") en las ramas ROUTE1/objeción/profile-ack.
-    from app.knowledge.current_turn import _next_funnel_question_or_none
-    _canon_q = _next_funnel_question_or_none(active_facts)
-    if _canon_q is not None:
+    # next_question_from_missing_facts (no _next_funnel_question_or_none): cuando el
+    # perfil se completa DENTRO de una respuesta RAG/friendly (ej. confirmación de
+    # documentos embebida en una pregunta), el resumen de confirmación (D6) debe
+    # aparecer aquí también — bug en vivo 2026-07-07 (conv 166): la confirmación de
+    # "cartas laborales" completó el perfil pero el turno se quedó con la respuesta
+    # RAG genérica sola, sin el resumen ni el cierre.
+    from app.knowledge.current_turn import next_question_from_missing_facts
+    _canon_q = next_question_from_missing_facts(active_facts)
+    if _canon_q:
         return _canon_q, []
     return None, []  # All profile fields covered — no nudge needed
 
@@ -1957,6 +1971,21 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
 
     if contract.get("intent") == "local_time":
         reply = _time_reply()
+    elif bool(getattr(turn_signals, "is_joke_request", False)) and _is_safe_for_friendly_llm(message, contract):
+        # Bug en vivo 2026-07-07 (conv 166): "Oye usted no cuenta chistes..." embebido
+        # en un mensaje largo/compuesto no matcheaba el Term Neo4j smalltalk_joke
+        # (aliases exactos: "chistes" plural no matchea "chiste" singular), y el
+        # turno completo se clasificaba requires_rag por otro fragmento del mensaje
+        # → respuesta genérica ignorando el chiste. is_joke_request viene del
+        # extractor unificado (turn_intent_classifier, misma llamada LLM que ya
+        # corre cada turno — NO una llamada extra) y el LLM ya distingue una
+        # petición real ("cuéntame un chiste") de un uso idiomático/queja ("así que
+        # chiste" = qué ridículo) vía few-shots, sin depender de un substring
+        # rígido. Tiene prioridad sobre requires_rag: un chiste nunca necesita RAG.
+        # friendly_result (no una asignación suelta) para que el nudge de cierre de
+        # abajo se siga agregando.
+        friendly_result = {"reply": _generate_joke_reply(fallback=CONTROLLED_FALLBACK_REPLY)}
+        reply = friendly_result["reply"]
     elif contract.get("requires_rag"):
         rag_result = _answer_rag_message(message, contract)
         reply = rag_result["reply"]

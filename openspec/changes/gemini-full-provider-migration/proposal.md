@@ -2,9 +2,11 @@
 
 Dos decisiones del usuario (2026-07-07, tras la Fase G1 de gemini-natural-recruiter):
 
-1. **Groq queda ELIMINADO del entorno.** No deprecado-con-fallback: eliminado. Gemini
-   2.5 Flash es el ÚNICO proveedor LLM en todos los caminos (generación, extracción/
-   clasificación JSON, visión, audio). Hoy Gemini solo cubre generación RAG y visión;
+1. **Groq y Cohere quedan ELIMINADOS del entorno.** No deprecados-con-fallback:
+   eliminados. Gemini 2.5 Flash es el ÚNICO proveedor LLM en todos los caminos
+   (generación, extracción/clasificación JSON, visión, audio). Cohere hoy solo
+   existe como rama nunca-usada de `call_llm` (`LLM_PROVIDER=cohere`) — se retira
+   junto con Groq (código, dependencia `cohere` y env `COHERE_*`). Hoy Gemini solo cubre generación RAG y visión;
    TODA la clasificación/extracción (el corazón del sistema) sigue llamando
    `call_groq_json`/`call_groq_with_system` directo. Inventario verificado:
    - `call_groq_json` (9 sitios): turn_intent_classifier:99, turn_extractor:233,

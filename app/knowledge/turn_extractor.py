@@ -29,13 +29,9 @@ from app.knowledge.turn_intent_classifier import TurnIntentSignals
 from app.knowledge.geo_utils import normalize_zm_laguna_city
 from app.knowledge.llm_errors import LLMUnavailableError
 
-# El extractor unificado usa su propio modelo: por defecto el de generación (70b),
-# más capaz para distinguir reclamo/negación de dato afirmado que el 8b clasificador.
-# Configurable vía UNIFIED_EXTRACTOR_MODEL sin afectar TIPC ni otros clasificadores.
-_EXTRACTOR_MODEL = os.getenv(
-    "UNIFIED_EXTRACTOR_MODEL",
-    os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-)
+# Proveedor único: Gemini (gemini-full-provider-migration 2026-07-07). El modelo
+# vive en gemini_client (GEMINI_MODEL); UNIFIED_EXTRACTOR_MODEL/GROQ_MODEL quedan
+# obsoletas (se retiran de .env en D7).
 
 # Campos de perfil que el extractor puede reportar (clave canónica).
 # Texto libre (sin Capa 2 que valide): name, license_expiration, apto_expiration.
@@ -228,18 +224,17 @@ def extract_turn(
     )
 
     try:
-        from app.indexer import call_groq_json
-        from groq import RateLimitError as GroqRateLimitError
-        raw = call_groq_json(user_content, _TURN_EXTRACTOR_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+        from app.gemini_client import dispatch_json
+        raw = dispatch_json(user_content, _TURN_EXTRACTOR_SYSTEM, temperature=0.0)
         data = json.loads(raw)
-    except GroqRateLimitError as exc:
-        # Cuota agotada en primaria y backup: abort silencioso del turno.
-        # El worker captura LLMUnavailableError antes de enviar nada a Chatwoot.
-        raise LLMUnavailableError(
-            f"Groq quota agotada en ambas claves (TPD): {exc}"
-        ) from exc
     except Exception:
         return TurnExtraction()
+
+    if isinstance(data, dict) and data.get("error"):
+        # Gemini no disponible (429/timeout — contrato de error del dispatch): se
+        # preserva el gate de producción del worker (abort silencioso del turno,
+        # sin respuesta basura ni re-preguntas por extracción vacía).
+        raise LLMUnavailableError(f"Gemini no disponible: {data.get('error')}")
 
     fields_raw = data.get("fields") or {}
     fields = {

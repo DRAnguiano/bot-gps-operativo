@@ -1185,34 +1185,26 @@ def call_groq_vision(
 
 
 def call_gemini_llm(prompt: str) -> str:
-    """Generación RAG vía Gemini (gemini-natural-recruiter Fase G1), con el mismo
-    system message de Mundo. Fallback automático a Groq si Gemini falla/agota cuota
-    (logueado [gemini_fallback] por dispatch_generation)."""
-    from app.gemini_client import dispatch_generation
-
-    return dispatch_generation(
-        _llm_system_message(), prompt, temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS,
+    """Generación RAG vía Gemini (proveedor ÚNICO — Groq y Cohere eliminados
+    2026-07-07) con el system message de Mundo y config propia GEMINI_* (no se
+    reciclan constantes GROQ_*). Ante fallo devuelve el mensaje de disculpa estándar
+    (contrato de error del caller), sin invocar otro proveedor."""
+    from app.gemini_client import (
+        GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, GeminiError, dispatch_generation,
     )
+
+    try:
+        return dispatch_generation(
+            _llm_system_message(), prompt,
+            temperature=GEMINI_TEMPERATURE, max_tokens=GEMINI_MAX_TOKENS,
+        )
+    except GeminiError as exc:
+        print(f"[gemini] Error: {exc}", flush=True)
+        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
 
 
 def call_llm(prompt: str) -> str:
-    provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
-
-    # Fase G1 (gemini-natural-recruiter): GENERACIÓN por Gemini es el DEFAULT desde
-    # 2026-07-07 (Groq se deprecia como camino principal, queda como fallback
-    # automático ante fallo/429 — ver dispatch_generation). Fijar
-    # LLM_GENERATION_PROVIDER=groq fuerza el camino legacy explícitamente.
-    if (os.getenv("LLM_GENERATION_PROVIDER") or "gemini").strip().lower() == "gemini":
-        return call_gemini_llm(prompt)
-
-    if provider == "cohere":
-        return call_cohere_llm(prompt)
-
-    if provider == "groq":
-        return call_groq_llm(prompt)
-
-    print(
-        f"[llm] LLM_PROVIDER desconocido: {provider}. Usando Groq por fallback.",
-        flush=True,
-    )
-    return call_groq_llm(prompt)
+    # Gemini es el proveedor ÚNICO (gemini-full-provider-migration, 2026-07-07):
+    # Groq y Cohere ya no forman parte del ecosistema. Sus funciones legacy de abajo
+    # se retiran físicamente en D7 tras la verificación en vivo.
+    return call_gemini_llm(prompt)

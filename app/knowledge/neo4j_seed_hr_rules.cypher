@@ -256,7 +256,11 @@ UNWIND [
     // fija + el funnel continúa. Evita el misfire observado (smoke 13:34) donde
     // "te digo que licencia tengo" disparó el listado de documentos.
     id:'smalltalk_joke', canonical:'chiste / humor ligero', category:'smalltalk',
-    aliases:['chiste','un chiste','chistecito','una broma','cuenteme un chiste','cuentame un chiste','dime un chiste','cuentas un chiste','chiste de trailero','chiste de traileros'],
+    // Plurales/conjugaciones agregados 2026-07-07 (bug en vivo conv 166): el matching
+    // de Neo4j es por alias EXACTO, no por raíz — "chistes"/"cuenta chistes" no
+    // matcheaban contra el singular "chiste" y el mensaje completo (compuesto con
+    // "licencia") se clasificaba como requirements_documents, perdiendo el chiste.
+    aliases:['chiste','chistes','un chiste','chistecito','una broma','bromas','cuenteme un chiste','cuentame un chiste','dime un chiste','cuentas un chiste','cuenta chistes','no cuenta chistes','sabe chistes','conoce chistes','chiste de trailero','chiste de traileros'],
     intent:'candidate_profile_signal', reply:'static_joke', source:null
   },
   {

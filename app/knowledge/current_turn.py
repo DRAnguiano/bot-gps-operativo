@@ -117,7 +117,7 @@ def is_age_disqualified(facts: dict[str, Any]) -> bool:
 
 
 def age_disqualification_reply(age: int | None = None) -> str:
-    from app.indexer import call_groq_with_system
+    from app.gemini_client import dispatch_generation
     from app.persona_config import SYSTEM_PROMPT
     context = (
         f"El candidato indicó que tiene {age} años. " if age else ""
@@ -126,7 +126,19 @@ def age_disqualification_reply(age: int | None = None) -> str:
         f"{context}Aplica la regla de descalificación por edad del perfil de operador. "
         "Genera únicamente el mensaje de respuesta al candidato."
     )
-    return call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=120)
+    try:
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=120) or "").strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    # Degradación determinista (dispatch_generation propaga ante fallo de Gemini):
+    # el candidato SIEMPRE recibe el mensaje de descalificación, nunca un error.
+    return (
+        "Le agradecemos mucho su interés en Transmontes. Por política del perfil de "
+        "operador no podemos continuar con su proceso en esta vacante. Le deseamos "
+        "mucho éxito."
+    )
 
 
 def _number_token_to_int(token: str) -> int | None:

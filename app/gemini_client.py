@@ -14,7 +14,11 @@ import os
 import httpx
 
 _API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-_DEFAULT_MODEL = "gemini-2.5-flash"
+_DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Config propia de Gemini (no se reciclan las constantes GROQ_*, deprecadas):
+GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "500") or 500)
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", os.getenv("TEMPERATURE", "0.0")) or 0.0)
 
 
 class GeminiError(RuntimeError):
@@ -134,43 +138,43 @@ def generate_vision(
 # Cutover independiente y reversible: LLM_GENERATION_PROVIDER / LLM_VISION_PROVIDER
 # / LLM_AUDIO_PROVIDER / LLM_EXTRACTOR_PROVIDER en {"groq"(default), "gemini"}.
 
-def _provider(env_name: str) -> str:
-    # Default "gemini" (decisión 2026-07-07: Groq se deprecia como camino principal;
-    # queda solo como fallback automático ante fallo/429 de Gemini). Para forzar Groq
-    # explícitamente (debug, comparación), fijar la env var en "groq".
-    return (os.getenv(env_name) or "gemini").strip().lower()
-
+# Los dispatch son GEMINI-ÚNICO (decisión 2026-07-07: Groq DEPRECADO — ya no se
+# llama ni como fallback). Ante fallo de Gemini, cada dispatch degrada con el MISMO
+# contrato de error que los callers ya manejan (JSON de error / string vacío /
+# excepción capturada por el caller con su fallback determinista) — nunca invocando
+# a Groq. groq_fallback_kwargs se conserva solo por compatibilidad de firma.
 
 def dispatch_generation(system: str, user: str, *, temperature: float | None = None,
                          max_tokens: int = 300) -> str:
-    """Equivalente de propósito a call_groq_with_system, con cutover por env."""
-    from app.indexer import call_groq_with_system
+    """Generación conversacional con system prompt (persona Mundo, acuses,
+    reencauces). Propaga GeminiError: cada caller tiene su fallback determinista
+    (acuse fijo, texto de plantilla) y decide cómo degradar."""
+    return generate_text(user, system=system, temperature=temperature or 0.0, max_tokens=max_tokens)
 
-    if _provider("LLM_GENERATION_PROVIDER") != "gemini":
-        return call_groq_with_system(system, user, temperature=temperature, max_tokens=max_tokens)
+
+def dispatch_json(prompt: str, system_message: str, *, temperature: float = 0.0,
+                   model: str | None = None) -> str:
+    """Extracción/clasificación JSON. Drop-in de call_groq_json: mismo orden
+    posicional (prompt, system) y mismo contrato de retorno — string JSON crudo;
+    ante fallo devuelve '{"error": ...}' (los callers ya lo manejan como señales
+    neutras / extracción vacía). ``model`` era la selección de modelo Groq; se
+    acepta y se ignora (compatibilidad de firma durante la migración)."""
     try:
-        return generate_text(user, system=system, temperature=temperature or 0.0, max_tokens=max_tokens)
+        return generate_json(prompt, system=system_message, temperature=temperature)
     except GeminiError as exc:
-        print(f"[gemini_fallback] generation -> groq: {exc}", flush=True)
-        return call_groq_with_system(system, user, temperature=temperature, max_tokens=max_tokens)
+        print(f"[gemini_json] Error: {exc}", flush=True)
+        return '{"error": "gemini_error"}'
 
 
 def dispatch_vision(image_bytes: bytes, prompt: str, *, mime_type: str = "image/jpeg",
                      json_mode: bool = False, groq_fallback_kwargs: dict | None = None) -> str:
-    """Equivalente de propósito a call_groq_vision, con cutover por env.
-
-    ``groq_fallback_kwargs`` se pasa a call_groq_vision (is_sticker, etc.) — el
-    prompt de Gemini y el de Groq pueden diferir (system_prompt vs prompt inline).
-    """
-    from app.indexer import call_groq_vision
-
-    if _provider("LLM_VISION_PROVIDER") != "gemini":
-        return call_groq_vision(image_bytes, mime_type=mime_type, **(groq_fallback_kwargs or {}))
+    """Visión de documentos. Ante fallo devuelve '' (mismo contrato que la visión
+    anterior: string vacío → media guard acotado, sin encolar)."""
     try:
         return generate_vision(image_bytes, prompt, mime_type=mime_type, json_mode=json_mode)
     except GeminiError as exc:
-        print(f"[gemini_fallback] vision -> groq: {exc}", flush=True)
-        return call_groq_vision(image_bytes, mime_type=mime_type, **(groq_fallback_kwargs or {}))
+        print(f"[gemini_vision] Error: {exc}", flush=True)
+        return ""
 
 
 def transcribe_audio(
@@ -192,6 +196,34 @@ def transcribe_audio(
                 {"text": prompt},
             ]
         }],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": max_tokens},
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": max_tokens,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     return _post(body).strip()
+
+
+# Glosario trailero para transcripción FIEL (bug en vivo conv 163: Whisper destrozó
+# "fulero"→"futbol"). Solo transcripción — el análisis de tono queda fuera (no es
+# requisito hoy; ver open question del design de gemini-natural-recruiter).
+_AUDIO_TRANSCRIBE_PROMPT = (
+    "Transcribe FIELMENTE este audio en español mexicano de un candidato a operador "
+    "de tractocamión. Devuelve SOLO la transcripción, sin comentarios.\n"
+    "Glosario de jerga del dominio (respeta estos términos tal cual si los oyes, no "
+    "los sustituyas por palabras parecidas): fulero/fulera (operador de tracto full), "
+    "full, sencillo, doble articulado, doble, caja seca, quinta rueda, torton, rabón, "
+    "tracto, tráiler, apto médico, licencia federal, R-Control, Transmontes, "
+    "semanas del IMSS, cartas laborales, La Laguna, Torreón, Gómez Palacio, Lerdo."
+)
+
+
+def dispatch_audio(audio_bytes: bytes, *, mime_type: str = "audio/ogg") -> str:
+    """Transcripción de nota de voz. Ante fallo devuelve '' (mismo contrato que la
+    transcripción fallida anterior: el webhook cae al media guard acotado)."""
+    try:
+        return transcribe_audio(audio_bytes, _AUDIO_TRANSCRIBE_PROMPT, mime_type=mime_type)
+    except GeminiError as exc:
+        print(f"[gemini_audio] Error: {exc}", flush=True)
+        return ""

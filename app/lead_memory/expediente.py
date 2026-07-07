@@ -384,8 +384,9 @@ def build_acuse(
     fallback = " ".join(parts)
 
     # Redacción natural (voz de Mundo, variada) sobre los MISMOS datos deterministas.
+    # Gemini único: ante fallo, el except de abajo degrada al acuse determinista.
     try:
-        from app.indexer import call_groq_with_system
+        from app.gemini_client import dispatch_generation
         from app.persona_config import SYSTEM_PROMPT
         prompt = (
             "El candidato acaba de enviar documento(s) de su expediente. Redacta un acuse "
@@ -395,7 +396,7 @@ def build_acuse(
             "Agradece nombrando lo recibido; si hay ilegible, pide amablemente re-tomar la "
             "foto; si faltan, menciónalos. No prometas contratación."
         )
-        out = (call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.4, max_tokens=140) or "").strip()
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.4, max_tokens=140) or "").strip()
         return out or fallback
     except Exception as exc:
         log.warning("[EXPEDIENTE] acuse LLM falló, usando fallback: %s", exc)

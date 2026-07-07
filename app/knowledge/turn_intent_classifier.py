@@ -10,14 +10,14 @@ en valor neutro (False / None) — pipeline degrada sin crash.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 
 
-_EXTRACTOR_MODEL = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+# Proveedor único: Gemini (gemini-full-provider-migration 2026-07-07). La selección
+# de modelo vive en gemini_client (GEMINI_MODEL); ya no hay constante de modelo Groq.
 
 _TURN_INTENT_SYSTEM = """Eres un clasificador de señales de reclutamiento para operadores de camión (tracto full / sencillo).
-Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 8 campos:
+Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 9 campos:
 
 {
   "is_ya_reclamo": <bool>,
@@ -27,7 +27,8 @@ Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 8 camp
   "renewal_proof": <"si" | "no" | null>,
   "no_road_experience": <bool>,
   "has_expiry_context": <bool>,
-  "experience_context": <bool>
+  "experience_context": <bool>,
+  "is_joke_request": <bool>
 }
 
 Definiciones:
@@ -65,6 +66,11 @@ experience_context — el candidato habla de SU PROPIA experiencia conduciendo v
   true: "manejo tracto desde hace 5 años", "soy operador de full", "llevo 8 años como transportista", "conduzco sencillo"
   false: "me interesa ser operador", "busco trabajo de tracto", "hola, quiero información"
 
+is_joke_request — el candidato PIDE que le cuenten un chiste/broma para animarlo. Distingue del uso
+  IDIOMÁTICO de "chiste"/"broma" como queja o sarcasmo (= "qué ridículo"), que NO es una petición.
+  true: "cuéntame un chiste", "no sabe contar chistes?", "échese una broma para animarme", "sabe algún chiste de trailero"
+  false: "así que chiste", "qué chiste de proceso", "esto es una broma verdad", "no es cosa de risa esto"
+
 IMPORTANTE: Responde SOLO el JSON, sin texto extra."""
 
 
@@ -78,6 +84,7 @@ class TurnIntentSignals:
     no_road_experience: bool = False
     has_expiry_context: bool = False
     experience_context: bool = False
+    is_joke_request: bool = False
 
 
 def classify_turn_intent(message: str) -> TurnIntentSignals:
@@ -88,8 +95,8 @@ def classify_turn_intent(message: str) -> TurnIntentSignals:
     if not (message or "").strip():
         return TurnIntentSignals()
     try:
-        from app.indexer import call_groq_json
-        raw = call_groq_json(message, _TURN_INTENT_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+        from app.gemini_client import dispatch_json
+        raw = dispatch_json(message, _TURN_INTENT_SYSTEM, temperature=0.0)
         data = json.loads(raw)
         return TurnIntentSignals(
             is_ya_reclamo=bool(data.get("is_ya_reclamo", False)),
@@ -100,6 +107,7 @@ def classify_turn_intent(message: str) -> TurnIntentSignals:
             no_road_experience=bool(data.get("no_road_experience", False)),
             has_expiry_context=bool(data.get("has_expiry_context", False)),
             experience_context=bool(data.get("experience_context", False)),
+            is_joke_request=bool(data.get("is_joke_request", False)),
         )
     except Exception:
         return TurnIntentSignals()

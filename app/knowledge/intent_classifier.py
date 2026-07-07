@@ -10,16 +10,14 @@ aislado vía el endpoint /classify.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
-from app.indexer import call_groq_json
+from app.gemini_client import dispatch_json
 from app.knowledge.text_normalizer import normalize_text
 from app.knowledge.geo_utils import normalize_zm_laguna_city
 
-# Modelo del clasificador. Chico por diseño: clasificar a JSON no necesita el 70B.
-# ~10x menos tokens y más rápido. La generación de respuestas sigue en el 70B.
-CLASSIFIER_MODEL = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+# Proveedor único: Gemini (gemini-full-provider-migration 2026-07-07). El modelo
+# vive en gemini_client (GEMINI_MODEL); ya no hay constante de modelo Groq.
 
 # ── Catálogo validado (docs/esquema_perfilamiento_v1.md §8) ──────────────────
 
@@ -291,7 +289,7 @@ def classify_message(message: str, last_bot_question: str | None = None) -> dict
     else:
         user_content = msg
 
-    raw_json = call_groq_json(user_content, CLASSIFIER_SYSTEM, temperature=0.0, model=CLASSIFIER_MODEL)
+    raw_json = dispatch_json(user_content, CLASSIFIER_SYSTEM, temperature=0.0)
 
     try:
         raw = json.loads(raw_json)

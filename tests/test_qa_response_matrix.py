@@ -32,16 +32,14 @@ class TestRunBusinessShadow:
         assert result["business_shadow_status"] == "ERROR"
         assert "import_error" in result["business_shadow_error"]
 
-    def test_empty_question_returns_error_empty_message(self):
-        # Mensaje vacío: el classifier devuelve safe_empty("empty_message") sin llamar
-        # al LLM, y el harness lo reporta como fila ERROR trazable.
-        with patch(
-            "app.knowledge.business_route_classifier.call_groq_json",
-            side_effect=AssertionError("LLM must not be called for empty message"),
-        ):
-            result = _run_business_shadow("")
+    def test_module_retired_degrades_to_error_row(self):
+        # business_route_classifier fue RETIRADO (gemini-full-provider-migration,
+        # 2026-07-07: código huérfano; el entendimiento del turno vive en el
+        # extractor unificado). El harness degrada a fila ERROR trazable sin
+        # crashear, hasta que se repunte al extractor (gate 4.2).
+        result = _run_business_shadow("manejo sencillo")
         assert result["business_shadow_status"] == "ERROR"
-        assert "empty_message" in result["business_shadow_error"]
+        assert "import_error" in result["business_shadow_error"]
 
     def test_valid_output_fields_present(self):
         from app.knowledge.business_route_schema import (

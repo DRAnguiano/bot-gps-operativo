@@ -125,7 +125,11 @@ def test_nudge_license_step_records_type(no_extraction):
     assert keys == ["license.type"]
 
 
-def test_nudge_all_facts_no_nudge(no_extraction):
+def test_nudge_all_facts_returns_summary_not_silence(no_extraction):
+    # gemini-natural-recruiter D6 (bug en vivo conv 166, 2026-07-07): un perfil que
+    # se completa DENTRO de un turno RAG/friendly ya NO se queda en silencio (era
+    # _next_funnel_question_or_none → None) — ahora usa next_question_from_missing_facts,
+    # que emite el resumen de confirmación ("¿Es correcto?") antes del cierre.
     mem = _facts(
         ("candidate", "name", "Juan Pérez"),
         ("candidate", "city", "Torreon"),
@@ -141,7 +145,8 @@ def test_nudge_all_facts_no_nudge(no_extraction):
         ("documents", "proof", "cartas"),
     )
     text, keys = KO._build_funnel_nudge("ok", {"intent": "info", "route": "rag"}, mem)
-    assert text is None
+    assert text is not None
+    assert "¿Es correcto?" in text
     assert keys == []
 
 
