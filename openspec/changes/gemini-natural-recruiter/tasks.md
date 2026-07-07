@@ -57,10 +57,14 @@
       licencia_federal + legible=si, parseado correcto por
       `parse_vision_classification` (compatibilidad confirmada con el Bloque 3 del
       expediente v2).
-- [ ] 4.3 Ventana de observación en prod (24-48h) — BLOQUEADA: requiere activar
-      `LLM_GENERATION_PROVIDER`/`LLM_VISION_PROVIDER=gemini` en `.env` real (candidatos
-      reales), decisión del usuario. Criterio de rollback: apagar la env var (revierte
-      al default groq de inmediato, sin redeploy de código).
+- [x] 4.3 Activado en `.env` 2026-07-07 (`LLM_GENERATION_PROVIDER=gemini`,
+      `LLM_VISION_PROVIDER=gemini`) — entorno de pruebas (Telegram/Chatwoot de
+      prueba, sin candidatos reales; se recrean conversaciones antes de desplegar a
+      producción real, decisión del usuario). Contenedores recreados, env vars
+      confirmadas dentro de hr_worker. Smoke en vivo (sin mocks) contra `call_llm`:
+      1.1s, respuesta fiel al contexto. Ventana de observación: continúa mientras el
+      usuario prueba flujos completos en el entorno de staging; rollback = apagar la
+      env var (sin redeploy).
 
 ## 5. Fase G2 — audio nativo (D3)
 
