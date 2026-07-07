@@ -154,3 +154,36 @@ class TestDispatchVision:
             out = gc.dispatch_vision(b"img", "prompt")
         assert out == "fallback ok"
         m_groq.assert_called_once()
+
+
+@mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
+class TestCallLlmCutover:
+    """Fase G1: call_llm (RAG generation) respeta LLM_GENERATION_PROVIDER sin tocar
+    el camino default cuando está OFF."""
+
+    def test_default_no_gemini_call(self):
+        from app import indexer
+        with mock.patch("app.indexer.call_groq_llm", return_value="groq") as m_groq, \
+             mock.patch("httpx.post") as m_post:
+            out = indexer.call_llm("hola")
+        assert out == "groq"
+        m_groq.assert_called_once()
+        m_post.assert_not_called()
+
+    def test_gemini_activated_routes_through_dispatch(self):
+        from app import indexer
+        with mock.patch.dict("os.environ", {"LLM_GENERATION_PROVIDER": "gemini"}), \
+             mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")), \
+             mock.patch("app.indexer.call_groq_llm") as m_groq:
+            out = indexer.call_llm("hola")
+        assert out == "desde gemini"
+        m_groq.assert_not_called()
+
+    def test_gemini_activated_falls_back_on_failure(self):
+        from app import indexer
+        with mock.patch.dict("os.environ", {"LLM_GENERATION_PROVIDER": "gemini"}), \
+             mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")), \
+             mock.patch("app.indexer.call_groq_with_system", return_value="fallback ok") as m_groq:
+            out = indexer.call_llm("hola")
+        assert out == "fallback ok"
+        m_groq.assert_called_once()

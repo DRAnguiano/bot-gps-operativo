@@ -1237,11 +1237,18 @@ async def chatwoot_webhook(
                         mime_type = "image/gif"
                     else:
                         mime_type = "image/jpeg"
+                    # Fase G1 (gemini-natural-recruiter): dispatch por función,
+                    # LLM_VISION_PROVIDER=gemini activa el cutover con fallback
+                    # automático a call_groq_vision (sin cambio hasta activarlo).
+                    from app.gemini_client import dispatch_vision
+                    from app.indexer import _VISION_PROMPT_IMAGE, _VISION_PROMPT_STICKER
+                    _vision_prompt = _VISION_PROMPT_STICKER if att_kind == "sticker" else _VISION_PROMPT_IMAGE
                     vision_text = await asyncio.to_thread(
-                        call_groq_vision,
+                        dispatch_vision,
                         image_bytes,
-                        is_sticker=(att_kind == "sticker"),
+                        _vision_prompt,
                         mime_type=mime_type,
+                        groq_fallback_kwargs={"is_sticker": (att_kind == "sticker")},
                     )
                 except Exception as exc:
                     vision_error = str(exc)

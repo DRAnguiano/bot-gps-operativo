@@ -46,12 +46,21 @@
 
 ## 4. Fase G1 — generación RAG y visión a Gemini
 
-- [ ] 4.1 Generación RAG vía adapter (`LLM_GENERATION_PROVIDER=gemini`); smoke del caso
-      Infonavit + anti-alucinación de pago + latencia comparada.
-- [ ] 4.2 Visión del expediente vía adapter (clasificación+extracción en una llamada —
-      conecta con Bloques 3-4 de document-expediente-vision-v2).
-- [ ] 4.3 Ventana de observación en prod (24-48h) con fallback activo; criterio de
-      rollback documentado (env var).
+- [x] 4.1 `call_llm` (entrada real de generación RAG): cutover vía
+      `LLM_GENERATION_PROVIDER=gemini` con fallback interno (call_gemini_llm →
+      dispatch_generation). Smoke contra el pipeline vivo (hr_worker, sin tocar
+      .env de prod): Infonavit fiel (1.2s) + anti-alucinación de pago (2.9s) ambos
+      OK. Tests de cutover con mocks (3 nuevos, camino default sin llamar a Gemini).
+- [x] 4.2 Visión: rama de `app.py` usa `dispatch_vision` con el prompt de producción
+      (`_VISION_PROMPT_IMAGE`/`_VISION_PROMPT_STICKER`); fallback a call_groq_vision
+      vía `groq_fallback_kwargs`. Smoke con licencia sintética (2.7s): clasificó
+      licencia_federal + legible=si, parseado correcto por
+      `parse_vision_classification` (compatibilidad confirmada con el Bloque 3 del
+      expediente v2).
+- [ ] 4.3 Ventana de observación en prod (24-48h) — BLOQUEADA: requiere activar
+      `LLM_GENERATION_PROVIDER`/`LLM_VISION_PROVIDER=gemini` en `.env` real (candidatos
+      reales), decisión del usuario. Criterio de rollback: apagar la env var (revierte
+      al default groq de inmediato, sin redeploy de código).
 
 ## 5. Fase G2 — audio nativo (D3)
 

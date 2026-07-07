@@ -1184,8 +1184,24 @@ def call_groq_vision(
     return result
 
 
+def call_gemini_llm(prompt: str) -> str:
+    """Generación RAG vía Gemini (gemini-natural-recruiter Fase G1), con el mismo
+    system message de Mundo. Fallback automático a Groq si Gemini falla/agota cuota
+    (logueado [gemini_fallback] por dispatch_generation)."""
+    from app.gemini_client import dispatch_generation
+
+    return dispatch_generation(
+        _llm_system_message(), prompt, temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS,
+    )
+
+
 def call_llm(prompt: str) -> str:
     provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
+
+    # Fase G1 (gemini-natural-recruiter): cutover de GENERACIÓN independiente del
+    # LLM_PROVIDER general — solo activo si LLM_GENERATION_PROVIDER=gemini.
+    if (os.getenv("LLM_GENERATION_PROVIDER") or "").strip().lower() == "gemini":
+        return call_gemini_llm(prompt)
 
     if provider == "cohere":
         return call_cohere_llm(prompt)
