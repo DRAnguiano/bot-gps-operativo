@@ -101,7 +101,15 @@ Extrae TODO lo que el candidato dijo en ESTE mensaje, en una sola pasada. Devuel
 
 REGLAS DE VALOR (qué dijo el candidato — NO interpretes política de negocio):
 - candidate.name: nombre propio. Ignora saludos ("hola"), afirmaciones ("si","no") y términos de unidad. Si no hay nombre, null.
-- candidate.city: ciudad de RESIDENCIA (no destinos ni rutas). Texto crudo, corrige typos evidentes. Sin marcador de residencia → null.
+- candidate.city: ciudad de RESIDENCIA (no destinos ni rutas). Sin marcador de residencia → null.
+  El candidato casi siempre reside en MÉXICO (zona de operación: La Laguna/Coahuila/Durango y
+  alrededores — Torreón, Gómez Palacio, Lerdo, Saltillo, Monterrey, etc.). Ante un nombre con
+  errores/typos, resuelve SIEMPRE hacia la ciudad MEXICANA real más parecida y plausible por el
+  contexto — NUNCA hacia una ciudad extranjera de nombre parecido aunque coincida más letras
+  (p. ej. "Torreano" es un typo de "Torreón", NO una localidad italiana). Una ciudad de ESTADOS
+  UNIDOS solo es válida si el candidato menciona la vacante "B1" (ruta a EEUU) en el mismo mensaje
+  o contexto reciente; sin esa mención, interpreta el nombre como mexicano o, si de verdad no hay
+  lectura mexicana plausible, deja null (no inventes ni una ciudad ni un país).
 - candidate.age: edad en años, entero como string. Convierte palabras ("cincuenta y uno"→"51"). NO de "N años de experiencia". Rango plausible 18-70, fuera de eso → null.
 - experience.vehicle_type: reporta el término CRUDO tal como lo dijo ("full","sencillo","torton","quinta rueda","trailer"). NO clasifiques si es objetivo o no — eso lo decide el sistema.
 - experience.years: años manejando como número o aproximación numérica ("10 años","más de 5","como 3 años"). Expresiones vagas sin número ("toda la vida","de siempre","muchos años","bastante","siempre") → null. Distínguelo del vencimiento de licencia.
@@ -165,6 +173,12 @@ Ejemplos:
 - "mi ruta era nuevo laredo" → embedded_question=null, has_embedded_question=false; candidate.city=null (destino, no residencia)
 - "E doble articulado, recién renovada" (bot preguntó licencia) → license.category="E", experience.vehicle_type="doble articulado", license.expiration_text=null (renovada NO es plazo)
 - "manejo caja seca dese ace 5 años" → experience.vehicle_type="caja seca", experience.years="5"
+- "vivo acá en La Amistad, soy de aquí de Torreano" → candidate.city="Torreón" (typo de ciudad
+  mexicana real y cercana a la zona — NO una localidad extranjera de nombre parecido)
+- "trabajo con visa, busco lo de la vacante b1, vivo en Houston" → candidate.city="Houston"
+  (válido SOLO porque menciona B1 en el mismo mensaje)
+- "vivo en Houston" (sin mención de B1) → candidate.city=null (ciudad de EEUU sin contexto B1;
+  no hay lectura mexicana plausible del nombre — no la inventes ni la aceptes como residencia)
 
 IMPORTANTE: Responde SOLO el JSON. value siempre es lo que el candidato DIJO, nunca una inferencia de negocio."""
 
