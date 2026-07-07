@@ -30,6 +30,19 @@ class TestGenerateText:
         with mock.patch("httpx.post", return_value=_fake_response(text="hola")):
             assert gc.generate_text("hola?") == "hola"
 
+    def test_thinking_budget_zero_always_set(self):
+        # Bug en vivo 2026-07-07: sin esto, el thinking consume maxOutputTokens y
+        # el texto visible corta a media palabra ("El pago en Trans...").
+        captured = {}
+
+        def _capture(url, params=None, json=None, timeout=None):
+            captured.update(json)
+            return _fake_response(text="respuesta completa")
+
+        with mock.patch("httpx.post", side_effect=_capture):
+            gc.generate_text("pregunta", system="sys")
+        assert captured["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0
+
     def test_missing_key_raises(self):
         with mock.patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
             with pytest.raises(gc.GeminiError):
@@ -96,8 +109,20 @@ class TestGenerateVision:
 
 @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
 class TestDispatchGeneration:
-    def test_default_provider_is_groq_no_gemini_call(self):
-        with mock.patch("app.indexer.call_groq_with_system", return_value="desde groq") as m_groq, \
+    def test_default_provider_is_gemini_no_env_needed(self):
+        # Decisión 2026-07-07: Groq se deprecia como camino principal — Gemini es
+        # el default SIN necesidad de fijar LLM_GENERATION_PROVIDER. clear=True
+        # aísla de cualquier valor real en el entorno (staging ya lo trae fijado).
+        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}, clear=True), \
+             mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")), \
+             mock.patch("app.indexer.call_groq_with_system") as m_groq:
+            out = gc.dispatch_generation("sys", "user")
+        assert out == "desde gemini"
+        m_groq.assert_not_called()
+
+    def test_explicit_groq_override_still_works(self):
+        with mock.patch.dict("os.environ", {"LLM_GENERATION_PROVIDER": "groq"}), \
+             mock.patch("app.indexer.call_groq_with_system", return_value="desde groq") as m_groq, \
              mock.patch("httpx.post") as m_post:
             out = gc.dispatch_generation("sys", "user")
         assert out == "desde groq"
@@ -131,8 +156,17 @@ class TestDispatchGeneration:
 
 @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
 class TestDispatchVision:
-    def test_default_provider_is_groq(self):
-        with mock.patch("app.indexer.call_groq_vision", return_value="desde groq") as m_groq, \
+    def test_default_provider_is_gemini_no_env_needed(self):
+        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}, clear=True), \
+             mock.patch("httpx.post", return_value=_fake_response(text="tipo_documento: ine")), \
+             mock.patch("app.indexer.call_groq_vision") as m_groq:
+            out = gc.dispatch_vision(b"img", "prompt")
+        assert out == "tipo_documento: ine"
+        m_groq.assert_not_called()
+
+    def test_explicit_groq_override_still_works(self):
+        with mock.patch.dict("os.environ", {"LLM_VISION_PROVIDER": "groq"}), \
+             mock.patch("app.indexer.call_groq_vision", return_value="desde groq") as m_groq, \
              mock.patch("httpx.post") as m_post:
             out = gc.dispatch_vision(b"img", "prompt")
         assert out == "desde groq"
@@ -158,12 +192,22 @@ class TestDispatchVision:
 
 @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
 class TestCallLlmCutover:
-    """Fase G1: call_llm (RAG generation) respeta LLM_GENERATION_PROVIDER sin tocar
-    el camino default cuando está OFF."""
+    """Fase G1: call_llm (RAG generation). Gemini es el default desde 2026-07-07
+    (Groq deprecado como camino principal, queda como fallback/override explícito)."""
 
-    def test_default_no_gemini_call(self):
+    def test_default_routes_through_gemini(self):
         from app import indexer
-        with mock.patch("app.indexer.call_groq_llm", return_value="groq") as m_groq, \
+        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}, clear=True), \
+             mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")), \
+             mock.patch("app.indexer.call_groq_llm") as m_groq:
+            out = indexer.call_llm("hola")
+        assert out == "desde gemini"
+        m_groq.assert_not_called()
+
+    def test_explicit_groq_override_still_works(self):
+        from app import indexer
+        with mock.patch.dict("os.environ", {"LLM_GENERATION_PROVIDER": "groq"}), \
+             mock.patch("app.indexer.call_groq_llm", return_value="groq") as m_groq, \
              mock.patch("httpx.post") as m_post:
             out = indexer.call_llm("hola")
         assert out == "groq"

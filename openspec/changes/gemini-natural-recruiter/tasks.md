@@ -74,6 +74,35 @@
       usuario prueba flujos completos en el entorno de staging; rollback = apagar la
       env var (sin redeploy).
 
+## 4b. Hallazgos en vivo post-activación G1 (conv 165, 2026-07-07)
+
+- [x] 4b.1 Truncamiento a media palabra en respuestas Gemini ("El pago en Trans...").
+      Causa raíz: `generate_text` no suprimía thinking (a diferencia de
+      `generate_json`) — el thinking invisible consumía `maxOutputTokens` antes de
+      terminar el texto visible. Fix: `thinkingBudget: 0` también en `generate_text`
+      (D2 ampliado a TODAS las llamadas, no solo JSON). Test de regresión (captura
+      el body de la petición, verifica thinkingBudget=0).
+- [x] 4b.2 Licencia A ofrecida como opción válida ("¿tipo A, B o E?") — solo B/E
+      aplican a tracto full/sencillo. Copy corregida en 3 lugares (funnel question
+      variants, reencauce desc, followup template). `validate_extraction`: A ya NO
+      satisface `license.category` (se preserva como `license.category_raw`, mismo
+      patrón que `vehicle_type_raw` — Capa 3 puede re-encauzar en vez de aceptarla).
+      6 tests nuevos (test_license_category_be_only.py).
+- [x] 4b.3 Decisión del usuario (2026-07-07): Groq se DEPRECA como camino principal
+      de generación/visión — Gemini pasa a ser el DEFAULT en código (sin depender de
+      fijar `LLM_GENERATION_PROVIDER`/`LLM_VISION_PROVIDER`); Groq queda vivo solo
+      como fallback automático ante fallo/429. `_provider()` en gemini_client.py
+      default cambiado de "groq" a "gemini". Tests reescritos (default ahora prueba
+      el camino Gemini; override explícito a "groq" tiene su propio test).
+- [x] 4b.4 RPM real del free tier confirmado por el usuario: 5 (no 10 como se asumió
+      en el eval). Suite completa (1010 tests) corrida con Gemini como default:
+      1005 passed, 5 failed inicialmente — causa: 4 tests de
+      test_chatwoot_media_guard.py mockeaban `app.app.call_groq_vision`, que dejó de
+      ser el punto de llamada real tras el cutover a `dispatch_vision` (B4); sin el
+      mock, la llamada caía a la red real con bytes de imagen inválidos. Corregido:
+      mock movido a `app.gemini_client.dispatch_vision` (el call site real). Suite
+      completa verde: 1010/1010.
+
 ## 5. Fase G2 — audio nativo (D3)
 
 - [ ] 5.1 Rama audio → Gemini inlineData + glosario trailero en prompt; Whisper

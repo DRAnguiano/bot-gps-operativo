@@ -10,16 +10,29 @@ sin adaptar; audio nativo sin probar. Ver memoria `project_gemini_flash_eval`.
 
 **D1 — Adapter por FUNCIÓN, no big-bang.** `app/gemini_client.py` expone las mismas
 firmas que las funciones Groq equivalentes (generate, vision, audio, json). Un dispatch
-por env decide el proveedor POR FUNCIÓN (`LLM_GENERATION_PROVIDER=gemini|groq`, ídem
-vision/audio/extractor). Cada corte es independiente y reversible con una env var.
-Fallback automático: excepción/429/timeout de Gemini → misma llamada vía Groq (patrón
-`_groq_with_fallback` existente, extendido a proveedor). *Alternativa descartada*:
-migrar todo de golpe — sin fallback probado sería apostar el camino vivo a un proveedor
-recién evaluado.
+por env decide el proveedor POR FUNCIÓN (`LLM_GENERATION_PROVIDER`/`LLM_VISION_PROVIDER`
+/etc., valores `gemini`|`groq`). Cada corte es independiente y reversible con una env
+var. Fallback automático: excepción/429/timeout de Gemini → misma llamada vía Groq
+(patrón `_groq_with_fallback` existente, extendido a proveedor). *Alternativa
+descartada*: migrar todo de golpe — sin fallback probado sería apostar el camino vivo a
+un proveedor recién evaluado.
 
-**D2 — `thinkingBudget: 0` SIEMPRE en llamadas JSON/extracción.** Hallazgo del eval: el
-thinking por default consume `maxOutputTokens` y trunca el JSON (0/6 → 4/6 al apagarlo).
-Para generación conversacional se permite thinking bajo si mejora calidad, pero medido.
+**D1b — Groq deprecado como default (decisión del usuario, 2026-07-07).** Tras
+verificar generación/visión en vivo (Bloque 4), el usuario decidió que Gemini sea el
+camino PRINCIPAL, no solo una opción activable: `_provider()` en gemini_client.py
+default cambió de `"groq"` a `"gemini"` — sin fijar ninguna env var, el sistema ya usa
+Gemini. Groq sigue vivo únicamente como fallback automático (D1) y como override
+explícito (`LLM_*_PROVIDER=groq`, útil para debug/comparación). No se eliminó código
+Groq — sigue siendo la red de seguridad.
+
+**D2 — `thinkingBudget: 0` SIEMPRE, en TODAS las llamadas Gemini (JSON y texto).**
+Hallazgo del eval: el thinking por default consume `maxOutputTokens` y trunca el JSON
+(0/6 → 4/6 al apagarlo). Ampliado 2026-07-07 (bug en vivo, Fase G1): la generación
+conversacional (`generate_text`, sin thinkingBudget) también se truncaba a media
+palabra ("El pago en Trans...") — el thinking invisible consumía el presupuesto antes
+de terminar el texto visible. Se revierte la idea original de "thinking bajo si
+mejora calidad" — la fiabilidad de una respuesta completa a un candidato real pesa
+más que el margen de pulido que daría el razonamiento.
 
 **D3 — Audio nativo con glosario en el prompt (Fase G2).** El audio de Chatwoot se envía
 a Gemini como `inlineData` con instrucción de transcripción + el glosario trailero

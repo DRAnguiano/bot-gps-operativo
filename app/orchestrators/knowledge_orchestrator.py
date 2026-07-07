@@ -1391,7 +1391,7 @@ _REENCAUCE_FIELD_DESC = {
     "candidate.city": "la ciudad donde se encuentra actualmente",
     "candidate.age": "su edad",
     "candidate.name": "su nombre",
-    "license.category": "el tipo de licencia federal (A, B o E) que tiene",
+    "license.category": "el tipo de licencia federal (B o E) que tiene",
     "license.expiration_text": "la vigencia de su licencia federal",
     "medical.apto_expiration_text": "la vigencia de su apto médico",
     "documents.labor_letters_status": "su comprobante laboral",
@@ -1492,8 +1492,8 @@ _FUNNEL_STEPS: list[dict] = [
     {
         "keys": {"license.category"},
         "variants": [
-            "¿Qué tipo de licencia federal tiene (A, B o E) y cuándo vence?",
-            "Para su perfil, ¿su licencia federal es tipo A, B o E, y cuándo vence?",
+            "¿Qué tipo de licencia federal tiene (B o E) y cuándo vence?",
+            "Para su perfil, ¿su licencia federal es tipo B o E, y cuándo vence?",
             "¿Qué tipo de licencia federal tiene y cuándo le vence?",
         ],
     },

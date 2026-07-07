@@ -238,8 +238,10 @@ def test_image_with_funnel_data_enqueues(client, monkeypatch, channel_type):
     async def fake_vision_download(*a, **kw):
         pass
 
-    # Mock de call_groq_vision para devolver un dato de funnel
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "licencia tipo E")
+    # dispatch_vision (gemini-natural-recruiter B4) reemplazó la llamada directa a
+    # call_groq_vision en app.py; se mockea en el punto de llamada real.
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "licencia tipo E")
 
     # Mock de descarga HTTP dentro del webhook
     class FakeResp:
@@ -282,7 +284,8 @@ def test_sticker_intent_enqueues(client, monkeypatch, channel_type):
 
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "afirmativo")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "afirmativo")
 
     class FakeResp:
         content = b"RIFF"  # bytes mínimos webp-like
@@ -324,7 +327,8 @@ def test_image_sticker_vision_fails_media_guard(client, monkeypatch, att):
 
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "")
 
     class FakeResp:
         content = b"\x00"
@@ -427,7 +431,8 @@ def test_debounce_on_image_vision_success(client, monkeypatch):
     monkeypatch.setenv("INBOUND_DEBOUNCE_ENABLED", "true")
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "licencia tipo E")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "licencia tipo E")
 
     class FakeResp:
         content = b"\xff\xd8\xff"

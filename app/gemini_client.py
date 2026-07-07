@@ -58,10 +58,20 @@ def generate_text(
     temperature: float = 0.0,
     max_tokens: int = 500,
 ) -> str:
-    """Generación conversacional (equivalente a call_groq_with_system)."""
+    """Generación conversacional (equivalente a call_groq_with_system).
+
+    thinkingBudget=0 SIEMPRE (mismo criterio que D2 para JSON): bug en vivo
+    2026-07-07 — sin esto, Gemini gasta parte de maxOutputTokens en razonamiento
+    invisible y el texto visible llega cortado a media palabra ("El pago en Trans").
+    Fiabilidad de respuesta completa pesa más que el margen de "pensamiento".
+    """
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     if system:
         body["systemInstruction"] = {"parts": [{"text": system}]}
@@ -125,7 +135,10 @@ def generate_vision(
 # / LLM_AUDIO_PROVIDER / LLM_EXTRACTOR_PROVIDER en {"groq"(default), "gemini"}.
 
 def _provider(env_name: str) -> str:
-    return (os.getenv(env_name) or "groq").strip().lower()
+    # Default "gemini" (decisión 2026-07-07: Groq se deprecia como camino principal;
+    # queda solo como fallback automático ante fallo/429 de Gemini). Para forzar Groq
+    # explícitamente (debug, comparación), fijar la env var en "groq".
+    return (os.getenv(env_name) or "gemini").strip().lower()
 
 
 def dispatch_generation(system: str, user: str, *, temperature: float | None = None,

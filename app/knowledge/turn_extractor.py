@@ -397,11 +397,20 @@ def validate_extraction(
                 })
             continue
 
-        # license.category — catálogo A/B/E
+        # license.category — solo B/E aplican a estos puestos (regla de negocio
+        # 2026-07-07: A es irrelevante para tracto full/sencillo). A se preserva
+        # como license.category_raw (mismo patrón que vehicle_type_raw) para que
+        # Capa 3 pueda re-encauzar en vez de tratarla como respuesta válida.
         if key == "license.category":
             cat = fv.value.strip().upper().replace("TIPO ", "").strip()
-            if cat in {"A", "B", "E"}:
+            if cat in {"B", "E"}:
                 _emit(key, cat, fv, catalog_validated=True)
+            elif cat == "A":
+                out.append({
+                    "fact_group": "license", "fact_key": "category_raw",
+                    "fact_value": cat, "confidence": _derived_confidence(fv, True),
+                    "is_explicit_correction": is_correction,
+                })
             continue
 
         # medical.apto_expiration_text — resolver igualdad con la licencia (determinista)

@@ -16,14 +16,19 @@ registrar el fallback en el log.
 - **WHEN** Gemini devuelve error o agota cuota en una llamada
 - **THEN** la operación se reintenta vía Groq y el turno se completa sin perderse
 
-### Requirement: Supresión de thinking en llamadas JSON
-El sistema SHALL fijar `thinkingConfig.thinkingBudget: 0` en toda llamada a Gemini que
-espere salida JSON (extracción, clasificación, visión estructurada), para evitar el
-truncamiento del JSON por consumo del presupuesto de tokens en razonamiento.
+### Requirement: Supresión de thinking en toda llamada Gemini
+El sistema SHALL fijar `thinkingConfig.thinkingBudget: 0` en TODA llamada a Gemini
+(JSON y texto conversacional), para evitar que el thinking consuma `maxOutputTokens`
+y trunque la respuesta visible antes de terminar.
 
 #### Scenario: Extracción sin truncar
 - **WHEN** se pide extracción JSON a Gemini
 - **THEN** la petición lleva thinkingBudget=0 y la respuesta es JSON parseable completo
+
+#### Scenario: Generación conversacional sin truncar
+- **WHEN** se pide una respuesta de texto (RAG, funnel) a Gemini
+- **THEN** la petición lleva thinkingBudget=0 y el texto visible no corta a media
+  palabra (bug en vivo 2026-07-07: "El pago en Trans...")
 
 ### Requirement: Extracción migra solo tras igualar el benchmark en shadow
 La extracción de facts SHALL permanecer en el proveedor actual hasta que Gemini, con

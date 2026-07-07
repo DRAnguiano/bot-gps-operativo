@@ -1198,9 +1198,11 @@ def call_gemini_llm(prompt: str) -> str:
 def call_llm(prompt: str) -> str:
     provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
 
-    # Fase G1 (gemini-natural-recruiter): cutover de GENERACIÓN independiente del
-    # LLM_PROVIDER general — solo activo si LLM_GENERATION_PROVIDER=gemini.
-    if (os.getenv("LLM_GENERATION_PROVIDER") or "").strip().lower() == "gemini":
+    # Fase G1 (gemini-natural-recruiter): GENERACIÓN por Gemini es el DEFAULT desde
+    # 2026-07-07 (Groq se deprecia como camino principal, queda como fallback
+    # automático ante fallo/429 — ver dispatch_generation). Fijar
+    # LLM_GENERATION_PROVIDER=groq fuerza el camino legacy explícitamente.
+    if (os.getenv("LLM_GENERATION_PROVIDER") or "gemini").strip().lower() == "gemini":
         return call_gemini_llm(prompt)
 
     if provider == "cohere":
