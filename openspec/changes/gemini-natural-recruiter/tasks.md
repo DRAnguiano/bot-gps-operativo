@@ -32,12 +32,17 @@
 
 ## 3. Adapter Gemini — base (D1/D2)
 
-- [ ] 3.1 `app/gemini_client.py`: generate/vision/json/audio vía REST (httpx),
-      thinkingBudget=0 en JSON, timeouts, errores tipados. Tests con mocks.
-- [ ] 3.2 Dispatch por función (`LLM_*_PROVIDER`) + fallback automático a Groq con log.
-      Tests: cutover reversible, fallback en 429/timeout.
-- [ ] 3.3 ROTAR la GEMINI_API_KEY del eval; decidir free-limitado vs tier pago (open
-      question 1 con el usuario).
+- [x] 3.1 `app/gemini_client.py`: generate_text/generate_json/generate_vision/
+      transcribe_audio vía REST (httpx), thinkingBudget=0 en JSON/vision-json,
+      GeminiError tipado (missing_key/timeout/http_error/rate_limited/empty_response).
+      17 tests con mocks (sin red real).
+- [x] 3.2 `dispatch_generation`/`dispatch_vision`: cutover por función
+      (`LLM_GENERATION_PROVIDER`/`LLM_VISION_PROVIDER`, default groq) + fallback
+      automático a Groq con log `[gemini_fallback]`. Tests: default sin llamar a
+      Gemini, cutover activo sin llamar a Groq, fallback en timeout/429.
+- [x] 3.3 Decisión del usuario (2026-07-07): seguir con la key del eval por ahora
+      (ya está solo en `.env` gitignored); rotar antes de exponer a producción real.
+      Open question 1 (tier) queda abierta para cuando se decida el corte a prod.
 
 ## 4. Fase G1 — generación RAG y visión a Gemini
 
