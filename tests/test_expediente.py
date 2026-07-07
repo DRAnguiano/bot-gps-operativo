@@ -196,6 +196,48 @@ def test_build_acuse_ilegible_pide_retoma():
     assert "foto" in acuse.lower()
 
 
+# ── privacidad / consentimiento (B2) ─────────────────────────────────────────
+
+def test_consent_states_from_facts():
+    assert EXP.has_consent_notice({}) is False
+    assert EXP.has_consent_notice({"expediente.consent.status": "aviso_enviado"}) is True
+    assert EXP.has_express_consent({"expediente.consent.status": "aviso_enviado"}) is False
+    assert EXP.has_express_consent({"expediente.consent.status": "expreso"}) is True
+    assert EXP.apto_consent_pending({"expediente.consent.status": "apto_pendiente"}) is True
+
+
+def test_is_consent_affirmative_variants():
+    for msg in ("sí, acepto", "SI ACEPTO", "acepto", "sí", "autorizo", "de acuerdo."):
+        assert EXP.is_consent_affirmative(msg), msg
+    for msg in ("no", "no acepto", "para qué quieren eso", "luego les digo"):
+        assert not EXP.is_consent_affirmative(msg), msg
+
+
+def test_register_express_consent_writes_status_timestamp_version():
+    calls = []
+    with mock.patch(
+        "app.lead_memory.repository.upsert_lead_fact",
+        side_effect=lambda **kw: calls.append(kw),
+    ):
+        assert EXP.register_express_consent("test:x") is True
+    by_key = {c["fact_key"]: c["fact_value"] for c in calls}
+    assert by_key["consent.status"] == "expreso"
+    assert by_key["consent.version"] == EXP.AVISO_VERSION
+    assert "consent.timestamp" in by_key
+
+
+def test_aviso_never_promises_and_mentions_arco():
+    # El aviso simplificado: finalidad + derechos, sin promesas de contratación.
+    assert "expediente" in EXP.AVISO_CONFIDENCIALIDAD
+    assert "eliminación" in EXP.AVISO_CONFIDENCIALIDAD
+    assert "contratado" not in EXP.AVISO_CONFIDENCIALIDAD.lower()
+
+
+def test_apto_consent_request_is_express():
+    assert "autorización expresa" in EXP.CONSENT_APTO_REQUEST
+    assert "acepto" in EXP.CONSENT_APTO_REQUEST
+
+
 # ── mark_received (upsert mockeado; sin imagen persistida) ───────────────────
 
 def test_mark_received_upserts_status_and_timestamp():

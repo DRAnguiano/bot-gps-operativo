@@ -347,7 +347,16 @@ def process_chatwoot_debounced_message(
                 "channel_user_id": channel_user_id,
                 "batch_size": len(messages),
                 "external_message_id": external_message_id,
-                "combined_content": combined_content[:500],
+                # Privacidad (expediente B2): si el lote trae un documento, los datos
+                # extraídos por visión NO se loggean en claro; solo el tipo.
+                "combined_content": (
+                    "[documento: " + ", ".join(
+                        str((it.get("vision_doc") or {}).get("tipo")) for it in messages
+                        if it.get("vision_doc")
+                    ) + "]"
+                    if any(it.get("vision_doc") for it in messages)
+                    else combined_content[:500]
+                ),
             },
             ensure_ascii=False,
         ),
@@ -424,20 +433,55 @@ def process_chatwoot_debounced_message(
                 "reason": "antispam_flood",
             }
 
+        # ── Expediente B2 (privacidad): consentimiento expreso del apto médico. ─────
+        # El apto es dato sensible de salud (LFPDPPP): si estaba pendiente el "sí
+        # acepto" y este mensaje lo afirma, se registra y se invita a reenviar la foto.
+        from app.lead_memory import expediente as _exp
+        _known_pre = {
+            f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+            for r in (pre_memory.get("facts") or []) if r.get("fact_value")
+        }
+        if _exp.apto_consent_pending(_known_pre) and _exp.is_consent_affirmative(combined_content):
+            _exp.register_express_consent(_pause_lead_key)
+            _consent_reply = (
+                "Gracias por su autorización ✓. Puede enviarnos la foto de su apto "
+                "médico cuando guste y seguimos con su expediente."
+            )
+            try:
+                asyncio.run(_send_chatwoot_message(
+                    account_id=account_id, conversation_id=conversation_id,
+                    content=_consent_reply,
+                ))
+            except Exception:
+                traceback.print_exc()
+            return {
+                "status": "ok", "processed": True, "sent_to_chatwoot": True,
+                "batch_size": len(messages), "combined_content": combined_content,
+                "reason": "apto_consent_registered",
+            }
+
         # ── Expediente (document-expediente-vision-v2 B1): registrar la recepción de
         # documentos clasificados por visión ANTES del orquestador (así la Nota IA del
         # turno ya los ve). La imagen nunca se persiste; solo estado + trazabilidad
         # (source_message_id). El acuse se compone después del reply. ────────────────
         _docs_received_now: list[str] = []
         _docs_ilegible_now: list[str] = []
+        _apto_gate_fired = False
         for _it in messages:
             _vd = _it.get("vision_doc") or {}
             _vd_tipo = _vd.get("tipo")
             if not _vd_tipo:
                 continue
-            from app.lead_memory.expediente import mark_received as _exp_mark
+            # B2 gate: el apto médico NO se registra ni se extrae sin consentimiento
+            # EXPRESO. Se pide la autorización y el resultado de visión se descarta
+            # (el contenido del turno se neutraliza para no persistir facts del apto).
+            if _vd_tipo == "apto_medico" and not _exp.has_express_consent(_known_pre):
+                _exp.request_apto_consent(_pause_lead_key)
+                _apto_gate_fired = True
+                combined_content = "[documento recibido]"
+                continue
             _vd_legible = bool(_vd.get("legible", True))
-            if _exp_mark(_pause_lead_key, _vd_tipo, legible=_vd_legible):
+            if _exp.mark_received(_pause_lead_key, _vd_tipo, legible=_vd_legible):
                 (_docs_received_now if _vd_legible else _docs_ilegible_now).append(_vd_tipo)
                 try:
                     from app.lead_memory.repository import upsert_lead_fact as _exp_up
@@ -716,24 +760,30 @@ def process_chatwoot_debounced_message(
         # específico (nombra lo recibido + qué falta / pide re-toma si ilegible),
         # no la respuesta genérica del pipeline. Datos deterministas del registro;
         # redacción LLM con fallback. ────────────────────────────────────────────
-        if _docs_received_now or _docs_ilegible_now:
+        if _docs_received_now or _docs_ilegible_now or _apto_gate_fired:
             try:
-                from app.lead_memory.expediente import build_acuse as _exp_acuse
-                _facts_now = {
-                    f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
-                    for r in (pre_memory.get("facts") or []) if r.get("fact_value")
-                }
+                _facts_now = dict(_known_pre)
                 for _t in _docs_received_now:
                     _facts_now[f"expediente.{_t}.status"] = "recibido"
                 for _t in _docs_ilegible_now:
                     _facts_now[f"expediente.{_t}.status"] = "ilegible"
-                _acuse = _exp_acuse(_facts_now, _docs_received_now, _docs_ilegible_now)
+                if _apto_gate_fired:
+                    # B2: apto sin consentimiento expreso → pedir autorización (el
+                    # documento NO se registró; visión descartada).
+                    _acuse = _exp.CONSENT_APTO_REQUEST
+                else:
+                    _acuse = _exp.build_acuse(_facts_now, _docs_received_now, _docs_ilegible_now)
+                # B2: aviso de confidencialidad la PRIMERA vez que sube un documento.
+                if _acuse and not _exp.has_consent_notice(_known_pre):
+                    _acuse = f"{_acuse}\n\n{_exp.AVISO_CONFIDENCIALIDAD}"
+                    if not _apto_gate_fired:
+                        _exp.register_consent_notice(_pause_lead_key)
                 if _acuse:
                     result["reply"] = _acuse
                     import logging as _lg3
                     _lg3.getLogger(__name__).info(
-                        "[EXPEDIENTE_ACUSE] lead=%s recibidos=%s ilegibles=%s",
-                        _pause_lead_key, _docs_received_now, _docs_ilegible_now,
+                        "[EXPEDIENTE_ACUSE] lead=%s recibidos=%s ilegibles=%s apto_gate=%s",
+                        _pause_lead_key, _docs_received_now, _docs_ilegible_now, _apto_gate_fired,
                     )
             except Exception:
                 traceback.print_exc()

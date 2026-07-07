@@ -29,13 +29,22 @@
 
 ## 2. Privacidad y consentimiento (paralelo, bloqueante para producción)
 
-- [ ] 2.1 Aviso simplificado al primer documento + registro `expediente.consent`
-      (timestamp + versión). Tests.
-- [ ] 2.2 Gate de consentimiento expreso antes de procesar apto médico. Tests.
-- [ ] 2.3 Confirmar no-persistencia de imágenes (la imagen se descarta post-visión) y que
-      los datos extraídos no van a logs en claro. Test + revisión de logs.
-- [ ] 2.4 Job de purga por retención (fin de proceso / N días inactividad) + mecanismo de
-      eliminación a solicitud (ARCO). Tests.
+- [x] 2.1 `AVISO_CONFIDENCIALIDAD` (v1-2026-07) se anexa al acuse del PRIMER documento;
+      `register_consent_notice` persiste `expediente.consent.{status,timestamp,version}`.
+      URL del aviso integral pendiente (2.5) — por ahora refiere al equipo. Tests.
+- [x] 2.2 Gate del apto médico: sin consentimiento EXPRESO el documento NO se registra,
+      el resultado de visión se descarta (contenido neutralizado — no persisten facts del
+      apto) y el bot pide autorización (`CONSENT_APTO_REQUEST`). "Sí, acepto" (determinista,
+      variantes) → `register_express_consent` + invitación a reenviar la foto. Nota: la
+      clasificación en sí requiere una pasada de visión (inevitable para saber que ES un
+      apto); lo que se protege es el procesamiento/persistencia del dato. Tests.
+- [x] 2.3 No-persistencia de imágenes confirmada (solo bytes en memoria en app.py; test
+      asserts en mark_received). Logs redactados: DEBOUNCE_QUEUED y DEBOUNCE_PROCESS
+      muestran "[documento: <tipo>]" en vez de los datos extraídos por visión.
+- [x] 2.4 `purge_expired_expedientes` (job beat diario 03:00, EXPEDIENTE_RETENTION_DAYS
+      default 90, task `expediente.purga_retencion` con retry) + `purge_lead_expediente`
+      (ARCO, por lead). Verificado contra BD real: ARCO elimina solo `expediente.*`
+      (perfil intacto); retención purga leads inactivos.
 - [ ] 2.5 Resolver open questions legales (URL del aviso integral, plazo de retención,
       conservación LFT post-contratación) con el usuario/abogado. **Validación por
       abogado mexicano ANTES de producción.**

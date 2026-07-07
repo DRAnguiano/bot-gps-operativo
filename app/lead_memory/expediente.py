@@ -208,6 +208,150 @@ def missing_documents(facts: dict[str, Any]) -> list[str]:
     ]
 
 
+# ── Privacidad / consentimiento (spec data-privacy-consent, LFPDPPP) ──────────
+
+# Versión del aviso: cambiarla invalida consentimientos previos (re-aviso).
+AVISO_VERSION = "v1-2026-07"
+
+# Aviso simplificado (D7). La URL del aviso integral está pendiente de definición
+# legal (open question 2.5); hasta entonces se refiere al equipo.
+AVISO_CONFIDENCIALIDAD = (
+    "📋 Aviso de privacidad: sus datos y documentos se usan únicamente para integrar "
+    "su expediente del proceso de contratación en Transmontes. No almacenamos las "
+    "imágenes; solo el estado de su expediente. Puede solicitar acceso, corrección o "
+    "eliminación de sus datos en cualquier momento con nuestro equipo."
+)
+
+CONSENT_APTO_REQUEST = (
+    "Su apto médico contiene información de salud, por lo que necesitamos su "
+    "autorización expresa para usarlo en su expediente. ¿Nos autoriza? "
+    "Responda \"sí, acepto\" y con gusto continuamos."
+)
+
+# Respuestas afirmativas cortas aceptadas como consentimiento expreso (determinista).
+_CONSENT_YES = {
+    "si acepto", "sí acepto", "si, acepto", "sí, acepto", "acepto", "si autorizo",
+    "sí autorizo", "autorizo", "si", "sí", "claro que si", "claro que sí", "de acuerdo",
+}
+
+
+def _consent_status(facts: dict[str, Any]) -> str | None:
+    return facts.get("expediente.consent.status")
+
+
+def has_consent_notice(facts: dict[str, Any]) -> bool:
+    """True si el aviso simplificado ya fue enviado (cualquier estado de consentimiento)."""
+    return bool(_consent_status(facts))
+
+
+def has_express_consent(facts: dict[str, Any]) -> bool:
+    """True solo con consentimiento EXPRESO (requerido para el apto médico)."""
+    return _consent_status(facts) == "expreso"
+
+
+def apto_consent_pending(facts: dict[str, Any]) -> bool:
+    return _consent_status(facts) == "apto_pendiente"
+
+
+def _write_consent(lead_key: str, status: str) -> bool:
+    try:
+        from app.lead_memory.repository import upsert_lead_fact
+        upsert_lead_fact(
+            lead_key=lead_key, fact_group="expediente", fact_key="consent.status",
+            fact_value=status, confidence=1.0, source="privacy_consent",
+        )
+        upsert_lead_fact(
+            lead_key=lead_key, fact_group="expediente", fact_key="consent.timestamp",
+            fact_value=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+            confidence=1.0, source="privacy_consent",
+        )
+        upsert_lead_fact(
+            lead_key=lead_key, fact_group="expediente", fact_key="consent.version",
+            fact_value=AVISO_VERSION, confidence=1.0, source="privacy_consent",
+        )
+        return True
+    except Exception as exc:
+        log.warning("[EXPEDIENTE] consentimiento no registrado (%s): %s", status, exc)
+        return False
+
+
+def register_consent_notice(lead_key: str) -> bool:
+    """Registra el envío del aviso simplificado (timestamp + versión)."""
+    return _write_consent(lead_key, "aviso_enviado")
+
+
+def request_apto_consent(lead_key: str) -> bool:
+    """Marca que se pidió el consentimiento expreso del apto (en espera de 'sí acepto')."""
+    return _write_consent(lead_key, "apto_pendiente")
+
+
+def register_express_consent(lead_key: str) -> bool:
+    """Registra el consentimiento EXPRESO (acción afirmativa del candidato)."""
+    return _write_consent(lead_key, "expreso")
+
+
+def is_consent_affirmative(message: str) -> bool:
+    """Determinista: ¿el mensaje es una afirmación corta de consentimiento?"""
+    from app.knowledge.text_normalizer import normalize_text
+    t = normalize_text(message or "").strip().rstrip(".!")
+    return t in _CONSENT_YES
+
+
+# ── Retención / eliminación (LFPDPPP: bloqueo y supresión) ────────────────────
+
+def purge_lead_expediente(lead_key: str) -> int:
+    """Elimina TODOS los facts del grupo expediente de un lead (derecho ARCO /
+    fin de proceso). Devuelve filas eliminadas."""
+    if not lead_key:
+        return 0
+    from app.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM rh_lead_facts_v2 WHERE lead_key = %s AND fact_group = 'expediente'",
+                (lead_key,),
+            )
+            return cur.rowcount or 0
+
+
+def purge_expired_expedientes(retention_days: int | None = None) -> dict[str, int]:
+    """Job de purga por retención: elimina facts `expediente.*` de leads SIN actividad
+    (ningún mensaje) en los últimos ``retention_days`` (env EXPEDIENTE_RETENTION_DAYS,
+    default 90). Devuelve {leads_purgados, facts_eliminados}."""
+    import os
+    days = retention_days if retention_days is not None else int(
+        os.getenv("EXPEDIENTE_RETENTION_DAYS", "90") or 90
+    )
+    from app.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH inactivos AS (
+                    SELECT f.lead_key
+                    FROM rh_lead_facts_v2 f
+                    WHERE f.fact_group = 'expediente'
+                    GROUP BY f.lead_key
+                    HAVING COALESCE(
+                        (SELECT MAX(m.created_at) FROM rh_lead_messages_v2 m
+                         WHERE m.lead_key = f.lead_key),
+                        NOW() - INTERVAL '100 years'
+                    ) < NOW() - make_interval(days => %s)
+                )
+                DELETE FROM rh_lead_facts_v2
+                WHERE fact_group = 'expediente'
+                  AND lead_key IN (SELECT lead_key FROM inactivos)
+                RETURNING lead_key
+                """,
+                (days,),
+            )
+            rows = cur.fetchall() or []
+    leads = len({r["lead_key"] if isinstance(r, dict) else r[0] for r in rows})
+    result = {"leads_purgados": leads, "facts_eliminados": len(rows)}
+    log.info("[EXPEDIENTE_PURGA] retention_days=%s %s", days, result)
+    return result
+
+
 def build_acuse(
     facts: dict[str, Any],
     received_now: list[str],

@@ -1416,7 +1416,11 @@ async def chatwoot_webhook(
                         "message_id": message_id,
                         "channel_user_id": channel_user_id,
                         "debounce_seconds": queued.get("debounce_seconds"),
-                        "content_preview": content[:300],
+                        # Privacidad (expediente B2): los datos extraídos de un documento
+                        # NO van al log en claro; solo el tipo clasificado.
+                        "content_preview": (
+                            f"[documento: {vision_doc['tipo']}]" if vision_doc else content[:300]
+                        ),
                     },
                     ensure_ascii=False,
                 ),
