@@ -20,11 +20,15 @@
 
 ## 2. Resumen de confirmación al cierre (D6)
 
-- [ ] 2.1 Generador determinista del resumen desde facts + estado
-      `funnel.summary_confirmed`; hook al completar el último dato (antes del cierre).
-- [ ] 2.2 Afirmación → cierre normal; corrección → actualiza fact (pipeline de
-      correcciones) y re-confirma solo el dato cambiado. Tests de ambos caminos.
-- [ ] 2.3 Verificación en vivo del flujo completo con corrección.
+- [x] 2.1 `build_funnel_summary` (determinista desde facts, 9 campos) sustituye al
+      cierre hasta confirmar; estado `funnel.summary_confirmed` persiste vía guard
+      (_PERSIST_KEYS + señal de perfil). `perfil_listo` NO se retrasa por el resumen.
+- [x] 2.2 Afirmación → confirmación contextual (marker "es correcto") + cierre en el
+      mismo turno; corrección tras el resumen → "Queda corregido — Ciudad: Lerdo.
+      ¿Así es correcto?" (re-confirma SOLO el dato cambiado, re-preguntable). 9 tests
+      nuevos + 79 de regresión (cierre/ack/funnel) verdes.
+- [ ] 2.3 Verificación en vivo del flujo completo con corrección (pendiente prueba
+      real del usuario o smoke con conversación completa).
 
 ## 3. Adapter Gemini — base (D1/D2)
 

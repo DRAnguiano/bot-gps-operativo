@@ -602,8 +602,11 @@ def process_chatwoot_debounced_message(
             )
 
         # 6.3: guard usa facts pre-computados (sin re-extracción)
+        # funnel.summary_confirmed cuenta como señal: el "sí, es correcto" al resumen
+        # debe disparar el guard para persistir la confirmación y emitir el cierre.
         _has_profile_signal = any(
-            k.startswith(("candidate.", "license.", "medical.", "documents.", "experience."))
+            (k.startswith(("candidate.", "license.", "medical.", "documents.", "experience."))
+             or k == "funnel.summary_confirmed")
             and k not in {"candidate.vacancy_accepted"}
             for k in _current_turn_facts
         )
@@ -668,6 +671,8 @@ def process_chatwoot_debounced_message(
                     "documents.labor_letters",
                     "documents.renewal_proof",
                     "candidate.city",
+                    # Resumen de confirmación (gemini-natural-recruiter D6)
+                    "funnel.summary_confirmed",
                 }
                 context_new = {
                     k: v for k, v in _current_turn_facts.items()

@@ -367,6 +367,10 @@ def _extract_context_confirmation_facts(norm_message: str, last_bot_message: str
         facts["documents.labor_letters"] = "sí"
     if _asks_renewal:
         facts["documents.renewal_proof"] = "si"
+    # Resumen de confirmación (gemini-natural-recruiter D6): "sí/correcto" al
+    # "¿Es correcto?" confirma los datos registrados y habilita el cierre.
+    if _TOPIC_SUMMARY_CONFIRM.search(last_bot_message):
+        facts["funnel.summary_confirmed"] = "true"
     return facts
 
 
@@ -627,10 +631,56 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
     return None
 
 
+# Marker del resumen de confirmación: la afirmación del candidato se detecta por
+# confirmación contextual contra este texto en el último mensaje del bot.
+_TOPIC_SUMMARY_CONFIRM = re.compile(r"es correcto", re.IGNORECASE)
+
+_SUMMARY_FIELD_DISPLAY: tuple[tuple[str, str], ...] = (
+    ("candidate.name", "Nombre"),
+    ("candidate.city", "Ciudad"),
+    ("candidate.age", "Edad"),
+    ("experience.vehicle_type", "Unidad"),
+    ("experience.years", "Experiencia"),
+    ("license.category", "Licencia"),
+    ("license.expiration_text", "Vence licencia"),
+    ("medical.apto_expiration_text", "Vence apto médico"),
+    ("documents.proof", "Comprobante laboral"),
+)
+
+
+def summary_confirmed(facts: dict[str, Any]) -> bool:
+    return facts.get("funnel.summary_confirmed") == "true"
+
+
+def build_funnel_summary(facts: dict[str, Any]) -> str:
+    """Resumen determinista de los datos registrados + '¿Es correcto?' (D6).
+
+    Se emite UNA vez al completar el funnel, antes del cierre: red de seguridad para
+    que el candidato corrija errores de transcripción/extracción antes de que el
+    perfil avance a documentos.
+    """
+    _display_val = {"cartas": "cartas laborales", "semanas_imss": "semanas del IMSS"}
+    lines = []
+    for key, label in _SUMMARY_FIELD_DISPLAY:
+        val = facts.get(key)
+        if val:
+            lines.append(f"· {label}: {_display_val.get(str(val), val)}")
+    return (
+        "¡Listo! Antes de continuar, le confirmo sus datos registrados:\n"
+        + "\n".join(lines)
+        + "\n¿Es correcto? Si algo está mal, dígame el dato y lo corrijo."
+    )
+
+
 def next_question_from_missing_facts(facts: dict[str, Any]) -> str:
-    """Siguiente pregunta del funnel, o el mensaje de cierre si ya no hay pregunta."""
+    """Siguiente pregunta del funnel; al completarse, el RESUMEN de confirmación
+    (una vez) y, ya confirmado, el mensaje de cierre."""
     question = _next_funnel_question_or_none(facts)
-    return question if question is not None else _profile_complete_closing()
+    if question is not None:
+        return question
+    if not summary_confirmed(facts):
+        return build_funnel_summary(facts)
+    return _profile_complete_closing()
 
 
 def profile_funnel_complete(facts: dict[str, Any]) -> bool:
@@ -752,6 +802,22 @@ def build_current_turn_ack(
     if name_just_learned and _fname:
         return _join_ack_and_question(f"Gracias, {_fname}.", next_question_from_missing_facts(facts))
 
+    # Resumen de confirmación (D6): si el último mensaje fue el resumen y este turno
+    # trae una CORRECCIÓN de dato, re-confirmar SOLO lo corregido (excepción única al
+    # sin-eco: el candidato necesita ver que su corrección quedó).
+    if (
+        last_bot_message
+        and _TOPIC_SUMMARY_CONFIRM.search(last_bot_message)
+        and current
+        and not current.get("funnel.summary_confirmed")
+    ):
+        _labels = dict(_SUMMARY_FIELD_DISPLAY)
+        _fixed = [
+            f"{_labels[k]}: {v}" for k, v in current.items() if k in _labels and v
+        ]
+        if _fixed:
+            return f"Queda corregido — {'; '.join(_fixed)}. ¿Así es correcto?"
+
     # Sin eco de datos (feedback usuario 2026-07-03: se sentía robótico repetir cada
     # dato). Un conector natural BREVE y VARIADO + la siguiente pregunta del funnel.
     # El saludo con nombre (arriba) es la única confirmación con dato. Las respuestas a
@@ -760,5 +826,7 @@ def build_current_turn_ack(
     if _next_q is not None:
         _connector = random.choice(_FUNNEL_CONNECTORS)
         return _join_ack_and_question(_connector, _next_q)
-    # Perfil completo: mensaje de cierre (sin conector ni eco).
+    # Perfil completo sin confirmar: emite el resumen; confirmado: el cierre.
+    if not summary_confirmed(facts):
+        return build_funnel_summary(facts)
     return _profile_complete_closing(facts)
