@@ -54,21 +54,29 @@
 
 ## 6. Finalidad conversacional (D5/D8)
 
-- [ ] 6.1 `conversational_purpose` en TurnIntentSignals + few-shots en
-      _TURN_INTENT_SYSTEM (incluye consolidar `is_joke_request` ya agregado en
-      curso). Tests de parsing + casos idiomáticos ("así que chiste" = queja).
-- [ ] 6.2 Orchestrator consume purpose: turno conversacional seguro → respuesta
-      generada (persona Mundo + dato del turno) + nudge; textos fijos
-      (CONTROLLED_FALLBACK_REPLY, CLARIFICATION, _FRIENDLY_NEUTRAL, DOCUMENT_ACK)
-      degradados a fallback de excepción. Guardrails intactos (tests: pago
-      fail-closed, requires_human, no-pregunta del friendly).
-- [ ] 6.3 Consolidar trabajo en curso: rama del chiste vía turn_signals,
-      `_should_use_friendly_llm` ampliado, fix del resumen en `_build_funnel_nudge`
-      (usa next_question_from_missing_facts), aliases plurales del seed aplicados
-      al Neo4j vivo.
-- [ ] 6.4 Auditoría de overlap de Terms (D6): listar aliases que compiten entre
-      categorías; retirar Terms conversacionales cuando el extractor los cubra
-      (verificado con casos reales). Seed re-aplicado.
+- [x] 6.1 `conversational_purpose` (smalltalk|queja|agradecimiento|despedida|
+      animo|none) en TurnIntentSignals + few-shots en _TURN_INTENT_SYSTEM (10
+      campos, misma llamada); validación de dominio en el parsing (valor fuera del
+      catálogo → none). Tests de parsing con mocks.
+- [x] 6.2 Orchestrator consume purpose: `_PURPOSE_GUIDANCE` inyecta la instrucción
+      situacional (queja→empatía, despedida→cierre cálido, animo→sin promesas) al
+      prompt del friendly; `_generate_situated_reply` (D8) convierte DOCUMENT_ACK a
+      generado-con-fallback (mismo patrón que el chiste). _FRIENDLY_NEUTRAL ya era
+      fallback del friendly; CONTROLLED_FALLBACK casi inalcanzable con el catch-all
+      ampliado; CLARIFICATION queda determinista (rama dedicada, decisión previa).
+      Guardrails verificados por tests (requires_human/high risk bloquean friendly).
+- [x] 6.3 Consolidado: rama del chiste vía turn_signals, `_should_use_friendly_llm`
+      ampliado, fix del resumen en `_build_funnel_nudge`, seed hr_rules re-aplicado
+      al Neo4j vivo (aliases plurales del chiste verificados en la BD).
+- [x] 6.4 Auditoría de overlap ejecutada contra el Neo4j vivo: 43 aliases
+      compartidos entre Terms. Mayoría benignos (pares duplicados del MISMO intent:
+      hola/greeting_basic, pago/payment_question, documentos_requisitos/
+      documents_question — candidatos a fusión, no a bug). PELIGROSOS los
+      cross-categoría: "cachimba" (rutas_bases vs ambiguous_slang), "siguiente paso"
+      (documentos vs process_location), y la clase conv-166: aliases de una palabra
+      ("licencia","documentos","pago") que secuestran mensajes compuestos con
+      intención conversacional. RETIRO de smalltalk_joke DIFERIDO a 7.1: requiere
+      verificar en vivo que is_joke_request lo cubre (bloqueado por cuota 20 RPD).
 
 ## 7. Retiro físico de Groq (D7 — SOLO al final)
 

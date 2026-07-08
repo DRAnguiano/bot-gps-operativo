@@ -17,7 +17,7 @@ from dataclasses import dataclass
 # de modelo vive en gemini_client (GEMINI_MODEL); ya no hay constante de modelo Groq.
 
 _TURN_INTENT_SYSTEM = """Eres un clasificador de señales de reclutamiento para operadores de camión (tracto full / sencillo).
-Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 9 campos:
+Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 10 campos:
 
 {
   "is_ya_reclamo": <bool>,
@@ -28,7 +28,8 @@ Analiza el mensaje del candidato y devuelve EXACTAMENTE este JSON con los 9 camp
   "no_road_experience": <bool>,
   "has_expiry_context": <bool>,
   "experience_context": <bool>,
-  "is_joke_request": <bool>
+  "is_joke_request": <bool>,
+  "conversational_purpose": <"smalltalk" | "queja" | "agradecimiento" | "despedida" | "animo" | "none">
 }
 
 Definiciones:
@@ -71,6 +72,17 @@ is_joke_request — el candidato PIDE que le cuenten un chiste/broma para animar
   true: "cuéntame un chiste", "no sabe contar chistes?", "échese una broma para animarme", "sabe algún chiste de trailero"
   false: "así que chiste", "qué chiste de proceso", "esto es una broma verdad", "no es cosa de risa esto"
 
+conversational_purpose — la FINALIDAD conversacional del mensaje cuando NO es dar un dato de perfil
+  ni hacer una pregunta de negocio. Sirve para que el bot responda humano en vez de con plantilla.
+  "smalltalk": plática casual sin tema de negocio ("qué calorón hoy", "ando comiendo, ahorita sigo", "usted es robot o persona?")
+  "queja": molestia/frustración con el proceso o la empresa ("así que chiste todo este proceso", "son bien lentos para contestar", "puro trámite y trámite")
+  "agradecimiento": gracias genuinas ("muchas gracias por la info", "se lo agradezco", "muy amable")
+  "despedida": cierre de conversación ("hasta luego", "nos vemos, buenas noches", "luego le sigo")
+  "animo": busca motivación/confianza sobre su proceso ("usted cree que sí quede?", "deme ánimos", "estoy nervioso por la entrevista")
+  "none": el mensaje es dato de perfil, pregunta de negocio, o cualquier otra cosa ("soy de Torreón", "cuánto pagan", "tengo licencia E")
+  Si el mensaje MEZCLA dato/pregunta con finalidad conversacional, el dato/pregunta manda: usa "none"
+  salvo que la parte conversacional sea el punto principal del mensaje.
+
 IMPORTANTE: Responde SOLO el JSON, sin texto extra."""
 
 
@@ -85,6 +97,7 @@ class TurnIntentSignals:
     has_expiry_context: bool = False
     experience_context: bool = False
     is_joke_request: bool = False
+    conversational_purpose: str = "none"
 
 
 def classify_turn_intent(message: str) -> TurnIntentSignals:
@@ -108,6 +121,12 @@ def classify_turn_intent(message: str) -> TurnIntentSignals:
             has_expiry_context=bool(data.get("has_expiry_context", False)),
             experience_context=bool(data.get("experience_context", False)),
             is_joke_request=bool(data.get("is_joke_request", False)),
+            conversational_purpose=(
+                str(data.get("conversational_purpose") or "none")
+                if str(data.get("conversational_purpose") or "none") in
+                {"smalltalk", "queja", "agradecimiento", "despedida", "animo", "none"}
+                else "none"
+            ),
         )
     except Exception:
         return TurnIntentSignals()

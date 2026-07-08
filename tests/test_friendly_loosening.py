@@ -70,3 +70,77 @@ def test_high_risk_still_blocked_by_safety_gate():
     assert KO._should_use_friendly_llm(
         "algo riesgoso", _contract(risk_level="high")
     ) is False
+
+
+# ── conversational_purpose (gemini-full-provider-migration B6) ─────────────────
+
+def test_purpose_parsed_from_extractor_json(monkeypatch):
+    import json as _json
+    from app.knowledge.turn_intent_classifier import classify_turn_intent
+    monkeypatch.setattr(
+        "app.gemini_client.dispatch_json",
+        lambda *a, **kw: _json.dumps({"conversational_purpose": "queja"}),
+    )
+    assert classify_turn_intent("así que chiste el proceso").conversational_purpose == "queja"
+
+
+def test_purpose_invalid_value_degrades_to_none(monkeypatch):
+    import json as _json
+    from app.knowledge.turn_intent_classifier import classify_turn_intent
+    monkeypatch.setattr(
+        "app.gemini_client.dispatch_json",
+        lambda *a, **kw: _json.dumps({"conversational_purpose": "hackeo"}),
+    )
+    assert classify_turn_intent("lo que sea").conversational_purpose == "none"
+
+
+def test_purpose_guidance_reaches_friendly_prompt(monkeypatch):
+    # La finalidad orienta el prompt del friendly (respuesta situada, no genérica).
+    captured = {}
+
+    def _fake_call_llm(prompt):
+        captured["prompt"] = prompt
+        return "Entiendo su molestia, su proceso sí avanza con nosotros."
+
+    monkeypatch.setattr(KO, "call_llm", _fake_call_llm)
+    out = KO._answer_friendly_message("puro trámite y trámite", _contract(), None, purpose="queja")
+    assert "molestia" in captured["prompt"].lower()
+    assert out["reply"]
+
+
+def test_purpose_unknown_keeps_generic_prompt(monkeypatch):
+    captured = {}
+
+    def _fake_call_llm(prompt):
+        captured["prompt"] = prompt
+        return "Aquí andamos."
+
+    monkeypatch.setattr(KO, "call_llm", _fake_call_llm)
+    KO._answer_friendly_message("hola", _contract(), None, purpose="none")
+    assert "MOLESTIA" not in captured["prompt"]
+
+
+# ── D8: texto fijo solo como degradación ──────────────────────────────────────
+
+def test_document_ack_generated_with_template_fallback(monkeypatch):
+    contract = {"reply_template": {"id": "document_ack", "text": "plantilla fija"}}
+    monkeypatch.setattr(
+        KO, "_generate_situated_reply",
+        lambda situation, fallback, **kw: "acuse generado natural",
+    )
+    assert KO._controlled_reply_from_contract(contract) == "acuse generado natural"
+
+
+def test_situated_reply_falls_back_on_llm_failure(monkeypatch):
+    def _boom(*a, **kw):
+        raise RuntimeError("llm caído")
+
+    monkeypatch.setattr("app.gemini_client.dispatch_generation", _boom)
+    out = KO._generate_situated_reply("situación X", fallback="texto fijo")
+    assert out == "texto fijo"
+
+
+def test_situated_reply_falls_back_on_empty(monkeypatch):
+    monkeypatch.setattr("app.gemini_client.dispatch_generation", lambda *a, **kw: "")
+    out = KO._generate_situated_reply("situación X", fallback="texto fijo")
+    assert out == "texto fijo"

@@ -235,12 +235,35 @@ def _generate_joke_reply(fallback: str) -> str:
     return f"{joke} {_JOKE_BRIDGE}"
 
 
+def _generate_situated_reply(situation: str, fallback: str, *, max_tokens: int = 120) -> str:
+    """Texto fijo → GENERADO (D8, gemini-full-provider-migration): la situación se
+    describe al LLM (persona Mundo) y el texto enlatado queda solo como degradación
+    ante fallo/vacío. Nunca promete contratación ni inventa datos."""
+    try:
+        from app.gemini_client import dispatch_generation
+        from app.persona_config import SYSTEM_PROMPT
+        prompt = (
+            f"{situation} Responde en 1-2 frases, cálido y natural (mexicano norteño), "
+            "sin preguntas, sin prometer contratación ni inventar datos o cifras."
+        )
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.5, max_tokens=max_tokens) or "").strip()
+        return out or fallback
+    except Exception:
+        return fallback
+
+
 def _controlled_reply_from_contract(contract: dict[str, Any]) -> str:
     template = contract.get("reply_template")
     if isinstance(template, dict) and template.get("text"):
         text = str(template["text"])
         if template.get("id") == "static_joke":
             return _generate_joke_reply(fallback=text)
+        if template.get("id") == "document_ack":
+            return _generate_situated_reply(
+                "El candidato avisa que enviará o acaba de mencionar sus documentos. "
+                "Acusa recibo del aviso y dile que aquí los esperamos para su expediente.",
+                fallback=text,
+            )
         return text
     if contract.get("requires_clarification"):
         return CONTROLLED_CLARIFICATION_REPLY
@@ -872,7 +895,37 @@ def _friendly_introduces_number(reply: str, message: str) -> bool:
     return _text_has_number(reply) and not _text_has_number(message)
 
 
-def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory: dict[str, Any] | None = None) -> dict[str, Any]:
+# Guía por FINALIDAD conversacional (gemini-full-provider-migration D5/D8): la señal
+# `conversational_purpose` del extractor unificado orienta el tono de la respuesta
+# generada — humano y específico a la situación, no un comentario genérico.
+_PURPOSE_GUIDANCE: dict[str, str] = {
+    "queja": (
+        "El candidato expresa MOLESTIA o frustración. Primero reconoce su molestia "
+        "con empatía genuina (sin excusas largas ni ponerte a la defensiva), luego "
+        "una frase que transmita que su proceso sí avanza y nos importa."
+    ),
+    "agradecimiento": (
+        "El candidato AGRADECE. Devuélvele el gesto breve y cálido (variado, no "
+        "siempre 'de nada'), y refuerza que seguimos al pendiente de su proceso."
+    ),
+    "despedida": (
+        "El candidato se DESPIDE. Despídete cálido y breve, deja la puerta abierta "
+        "para retomar cuando guste. No agregues información nueva."
+    ),
+    "animo": (
+        "El candidato busca ÁNIMO o confianza sobre su proceso. Anímalo genuino y "
+        "concreto SIN prometer contratación ni resultados: valora su interés y su "
+        "experiencia declarada, y que el equipo revisa cada perfil con seriedad."
+    ),
+    "smalltalk": (
+        "El candidato hace plática casual. Síguele la plática UNA frase amable y "
+        "natural (mexicano norteño, sin exagerar), sin desviarte a temas sensibles."
+    ),
+}
+
+
+def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory: dict[str, Any] | None = None,
+                              purpose: str = "none") -> dict[str, Any]:
     started = time.perf_counter()
 
     # No-respuesta ("ahorita le respondo", "espéreme", "luego le digo"): respuesta
@@ -897,6 +950,12 @@ def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory
         if strong else
         "Responde corto y cordial."
     )
+    # Finalidad detectada por el extractor: instrucción específica de la situación
+    # (queja/agradecimiento/despedida/ánimo/smalltalk) para responder humano, no
+    # con un comentario genérico.
+    _purpose_note = _PURPOSE_GUIDANCE.get(purpose, "")
+    if _purpose_note:
+        tono_extra = f"{_purpose_note} {tono_extra}"
 
     prompt = f"""
 Eres Mundo, del equipo de reclutamiento de Transmontes. Reclutador mexicano: directo, cálido, breve.
@@ -1993,7 +2052,10 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
         if contract.get("route") == "fallback" and contract.get("intent") == "unknown":
             contract.update({"route": "friendly_smalltalk", "intent": "friendly_smalltalk", "reason": "safe_unknown_routed_to_friendly_llm"})
             lead_stage_to = _stage_for_contract(contract, message, turn_signals)
-        friendly_result = _answer_friendly_message(message, contract, lead_memory_before)
+        friendly_result = _answer_friendly_message(
+            message, contract, lead_memory_before,
+            purpose=str(getattr(turn_signals, "conversational_purpose", "none") or "none"),
+        )
         reply = friendly_result["reply"]
     elif contract.get("intent") == "greeting":
         # 2.3: candidato que regresa recibe ack corto + siguiente campo; primer turno → presentación completa
