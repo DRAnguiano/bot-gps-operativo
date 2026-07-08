@@ -86,5 +86,10 @@
 
 ## 8. Bloqueos externos
 
-- [ ] 8.1 Decisión de tier pago de Gemini (bloquea 7.x para producción real; en
-      staging todo puede completarse con free tier + cadencia).
+- [ ] 8.1 Decisión de tier pago de Gemini — URGENTE, bloquea TODO el testing:
+      verificado contra la API 2026-07-07, la cuota diaria del free tier es de solo
+      20 requests/día (GenerateRequestsPerDayPerProjectPerModel-FreeTier: 20), no
+      ~250 como se estimó. Con Gemini como proveedor único, 20 RPD ≈ 3-4 turnos de
+      conversación al día: no alcanza ni para staging. Opciones: activar billing en
+      el proyecto Google (pay-as-you-go, ~$0.30/M tokens de entrada) o el sistema queda degradado (extractor aborta turnos, generación en
+      texto de disculpa) hasta el reset diario.
