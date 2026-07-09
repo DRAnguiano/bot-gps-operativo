@@ -26,15 +26,21 @@
 
 ## 2. Validador — frontera de autoridad
 
-- [ ] 2.1 `app/knowledge/agent_decision_validator.py`: pipeline D2 (evidencia
-      literal → confidence mínima → Capa 2 `validate_extraction` → contradicción
-      sin corrección explícita → uncertainty_flag). Log `[AGENT_FACT_REJECTED]`
-      por descarte. Tests: fact inventado, confidence baja, licencia A, caja seca,
-      contradicción full→sencillo sin corrección.
-- [ ] 2.2 Frontera dura: verificación (tests) de que ningún código del agente llama
-      a escritura de labels/stage/perfil_listo — labels siguen saliendo solo de
-      `calculate_candidate_labels`; handoff_recommendation solo-activar (test: no
-      puede desactivar requires_human de B1/reingreso/edad).
+- [x] 2.1 `app/knowledge/agent_decision_validator.py`: pipeline D2 (evidencia
+      literal normalizada → confidence mínima `AGENT_FACT_MIN_CONFIDENCE` (default
+      0.7) → contradicción sin corrección explícita → Capa 2 `validate_extraction`,
+      mismo camino que el extractor determinista). Log `[AGENT_FACT_REJECTED]` por
+      cada descarte con motivo. 15 tests: fact sin evidencia, confidence baja,
+      licencia A (no certifica, igual que el extractor determinista), doble
+      articulado→full vía catálogo, edad fuera de rango, contradicción
+      full→sencillo sin corrección (no pisa + uncertainty_flag).
+- [x] 2.2 Frontera dura verificada: test estructural confirma que
+      `calculate_candidate_labels` (chatwoot_note_sync.py) no importa ni menciona
+      el módulo agéntico — labels siguen saliendo EXCLUSIVAMENTE de ahí.
+      `resolve_handoff` (OR puro): 4 tests — no puede desactivar un
+      `requires_human` determinista, sí puede activar uno nuevo, y
+      `validate_agent_decision` propaga el override al resultado.
+      19 tests nuevos. Suite completa: 918 passed, 0 failed.
 
 ## 3. Shadow en el orchestrator
 
