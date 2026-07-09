@@ -156,45 +156,56 @@ def generate_vision(
     return _post(body).strip()
 
 
-# ── Dispatch por función con fallback automático a Groq (D1) ──────────────────
-# Cutover independiente y reversible: LLM_GENERATION_PROVIDER / LLM_VISION_PROVIDER
-# / LLM_AUDIO_PROVIDER / LLM_EXTRACTOR_PROVIDER en {"groq"(default), "gemini"}.
-
-# Los dispatch son GEMINI-ÚNICO (decisión 2026-07-07: Groq DEPRECADO — ya no se
-# llama ni como fallback). Ante fallo de Gemini, cada dispatch degrada con el MISMO
-# contrato de error que los callers ya manejan (JSON de error / string vacío /
-# excepción capturada por el caller con su fallback determinista) — nunca invocando
-# a Groq. groq_fallback_kwargs se conserva solo por compatibilidad de firma.
+# ── Dispatch por función — Gemini PRIMARIO, Groq fallback TEMPORAL ────────────
+# TEMPORAL (2026-07-09): gemini-3.5-flash está devolviendo 503 "high demand"
+# sostenido en ambas keys (primaria y backup). Mientras se estabiliza o se
+# contrata el tier pago, cada dispatch cae a Groq (`call_groq_*`, restauradas en
+# indexer.py con las 4 keys/orgs) ANTE FALLO — Gemini sigue siendo el intento
+# PRIMARIO siempre; Groq nunca se llama si Gemini responde. Retirar este fallback
+# cuando Gemini se estabilice (ver openspec/changes/gemini-full-provider-migration).
 
 def dispatch_generation(system: str, user: str, *, temperature: float | None = None,
                          max_tokens: int = 300) -> str:
     """Generación conversacional con system prompt (persona Mundo, acuses,
-    reencauces). Propaga GeminiError: cada caller tiene su fallback determinista
-    (acuse fijo, texto de plantilla) y decide cómo degradar."""
-    return generate_text(user, system=system, temperature=temperature or 0.0, max_tokens=max_tokens)
+    reencauces). Gemini primario; ante fallo cae a Groq (temporal)."""
+    try:
+        return generate_text(user, system=system, temperature=temperature or 0.0, max_tokens=max_tokens)
+    except GeminiError as exc:
+        print(f"[gemini_fallback] generation -> groq (temporal): {exc}", flush=True)
+        from app.indexer import call_groq_with_system
+        return call_groq_with_system(system, user, temperature=temperature, max_tokens=max_tokens)
 
 
 def dispatch_json(prompt: str, system_message: str, *, temperature: float = 0.0) -> str:
     """Extracción/clasificación JSON (orden posicional prompt, system — herencia del
-    contrato anterior). Devuelve el string JSON crudo; ante fallo devuelve
-    '{"error": ...}' (los callers lo manejan como señales neutras / extracción
-    vacía). El modelo es único y vive en GEMINI_MODEL."""
+    contrato anterior). Devuelve el string JSON crudo. Gemini primario; ante fallo
+    cae a Groq (temporal) antes de devolver el contrato de error."""
     try:
         return generate_json(prompt, system=system_message, temperature=temperature)
     except GeminiError as exc:
-        print(f"[gemini_json] Error: {exc}", flush=True)
-        return '{"error": "gemini_error"}'
+        print(f"[gemini_fallback] json -> groq (temporal): {exc}", flush=True)
+        try:
+            from app.indexer import call_groq_json
+            return call_groq_json(prompt, system_message, temperature=temperature)
+        except Exception as exc2:
+            print(f"[gemini_json] Error tras fallback: {exc2}", flush=True)
+            return '{"error": "gemini_error"}'
 
 
 def dispatch_vision(image_bytes: bytes, prompt: str, *, mime_type: str = "image/jpeg",
-                     json_mode: bool = False) -> str:
-    """Visión de documentos. Ante fallo devuelve '' (mismo contrato que la visión
-    anterior: string vacío → media guard acotado, sin encolar)."""
+                     json_mode: bool = False, groq_fallback_kwargs: dict | None = None) -> str:
+    """Visión de documentos. Gemini primario; ante fallo cae a Groq (temporal)
+    antes de devolver '' (media guard acotado)."""
     try:
         return generate_vision(image_bytes, prompt, mime_type=mime_type, json_mode=json_mode)
     except GeminiError as exc:
-        print(f"[gemini_vision] Error: {exc}", flush=True)
-        return ""
+        print(f"[gemini_fallback] vision -> groq (temporal): {exc}", flush=True)
+        try:
+            from app.indexer import call_groq_vision
+            return call_groq_vision(image_bytes, mime_type=mime_type, **(groq_fallback_kwargs or {}))
+        except Exception as exc2:
+            print(f"[gemini_vision] Error tras fallback: {exc2}", flush=True)
+            return ""
 
 
 def transcribe_audio(

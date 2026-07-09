@@ -35,6 +35,23 @@ contrato que sus callers ya manejan:
 *Alternativa rechazada 3 veces por el usuario*: mantener Groq como fallback — "que
 únicamente quede como camino para todas las respuestas gemini".
 
+**Excepción temporal (2026-07-09, decisión explícita del usuario).** `gemini-3.5-flash`
+empezó a devolver 503 "high demand" sostenido en ambas keys (primaria y backup),
+abortando turnos vía `[LLM_GATE]` (silencio total al candidato) y bloqueando la
+recolección de datos de sombra de `controlled-agentic-profiling` Bloque 4. El usuario
+autorizó restaurar Groq como red de seguridad TEMPORAL, con una condición explícita:
+Gemini sigue siendo estructuralmente el intento PRIMARIO en cada dispatch; Groq solo
+se invoca dentro del `except GeminiError` de `dispatch_generation`/`dispatch_json`/
+`dispatch_vision` (import local, nunca en el cuerpo principal de la función), usando
+las 4 keys/orgs de Groq que ya existían en `.env` (`GROQ_API_KEY`,
+`GROQ_API_KEY_BACKUP`, `GROQ_API_KEY_ORG2`, `GROQ_API_KEY_ORG3`) — no se añadió
+ninguna key nueva. `call_gemini_llm` (`indexer.py`) NO duplica este fallback (bug real
+detectado y corregido: una segunda capa de fallback ahí causaba que un test mockeara
+la función equivocada y disparara una llamada real a Groq); el único punto de
+fallback vive en `gemini_client.py`. Esta excepción se retira (vuelta a D1 estricto)
+cuando Gemini se estabilice o se contrate el tier pago — no reemplaza la decisión D1,
+la suspende mientras dura la interrupción de servicio.
+
 **D2 — Config propia de Gemini, sin reciclar constantes Groq.** `GEMINI_MODEL`
 (default `gemini-2.5-flash` desde 2026-07-08 para ampliar margen de RPM en
 free tier/staging), `GEMINI_MAX_TOKENS` (default 500),

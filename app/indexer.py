@@ -8,7 +8,15 @@ Dos responsabilidades:
    el modelo) NO se borra; ver constraint 7 en ``openspec/project.md``.
 2. **Recuperación y generación**: `retrieve_context_for_guardrail` (recupera
    para el guardrail) y la generación LLM vía Gemini (`call_llm` →
-   `call_gemini_llm`; proveedor único — Groq/Cohere retirados 2026-07-07).
+   `call_gemini_llm`; proveedor primario — Cohere retirado 2026-07-07).
+
+   TEMPORAL (2026-07-09): las funciones `call_groq_*` se RESTAURARON como
+   fallback de PRUEBA sobre `gemini_client.dispatch_*` mientras Gemini
+   resuelve una falla 503 "high demand" sostenida en gemini-3.5-flash (ambas
+   keys, primaria y backup) — ver openspec/changes/gemini-full-provider-migration
+   D1 (Gemini-único) y su nota de excepción temporal. Retirar de nuevo cuando
+   Gemini se estabilice o se contrate el tier pago. Groq sigue sin ser el
+   camino PRINCIPAL: solo entra si Gemini falla.
 
 Nota: la recuperación acotada por fuente autorizada (fail-closed de pago) vive
 en `app/knowledge/context_builder.py`, que reutiliza los helpers privados de
@@ -23,6 +31,7 @@ from typing import Any
 import chromadb
 import httpx
 from chromadb.config import Settings as ChromaSettings
+from groq import Groq, RateLimitError as GroqRateLimitError
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
@@ -58,6 +67,12 @@ CHUNK_OVERLAP = int(getattr(settings, "CHUNK_OVERLAP", os.getenv("CHUNK_OVERLAP"
 TOP_K = int(getattr(settings, "TOP_K", os.getenv("TOP_K", "5")))
 
 TEMPERATURE = float(getattr(settings, "TEMPERATURE", os.getenv("TEMPERATURE", "0.0")))
+
+# TEMPORAL (2026-07-09): config Groq restaurada solo para el fallback de prueba
+# — ver docstring del módulo.
+GROQ_MODEL = getattr(settings, "GROQ_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+GROQ_MAX_TOKENS = int(getattr(settings, "GROQ_MAX_TOKENS", os.getenv("GROQ_MAX_TOKENS", "900")))
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
 # Cohere Rerank.
@@ -490,6 +505,156 @@ def _llm_system_message() -> str:
     )
 
 
+def _reasoning_suppression_suffix(model: str) -> str:
+    """Interruptor `/no_think` para modelos qwen reasoning: evita que gasten el
+    budget de tokens en `<think>…</think>`. No-op para modelos no-qwen."""
+    return " /no_think" if "qwen" in (model or "").lower() else ""
+
+
+def _groq_call(
+    api_key: str,
+    messages: list[dict],
+    model: str,
+    *,
+    json_mode: bool = False,
+    temperature: float = TEMPERATURE,
+    max_tokens: int = GROQ_MAX_TOKENS,
+    timeout_key: str = "GROQ_TIMEOUT_SECONDS",
+    timeout_default: str = "8",
+) -> str:
+    """Ejecuta una llamada a Groq y devuelve el contenido de la respuesta.
+
+    TEMPORAL (2026-07-09): restaurado como fallback de prueba sobre Gemini — ver
+    docstring del módulo. Punto único de construcción del cliente; los callers
+    públicos implementan el patrón de fallback (primary → backup → org2 → org3)
+    sobre este helper.
+    """
+    timeout_secs = float(os.getenv(timeout_key, timeout_default))
+    timeout = httpx.Timeout(timeout_secs, connect=5.0)
+    kwargs: dict = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    if "gpt-oss" in (model or "").lower():
+        kwargs["extra_body"] = {"reasoning_effort": "low", "reasoning_format": "hidden"}
+    with httpx.Client(timeout=timeout) as http_client:
+        client = Groq(api_key=api_key, http_client=http_client)
+        completion = client.chat.completions.create(**kwargs)
+    return completion.choices[0].message.content or ("" if not json_mode else "{}")
+
+
+def _groq_with_fallback(
+    primary_key: str,
+    backup_key: str | None,
+    fn_name: str,
+    messages: list[dict],
+    model: str,
+    *,
+    json_mode: bool = False,
+    temperature: float = TEMPERATURE,
+    max_tokens: int = GROQ_MAX_TOKENS,
+    timeout_key: str = "GROQ_TIMEOUT_SECONDS",
+    timeout_default: str = "8",
+    org2_key: str | None = None,
+    org3_key: str | None = None,
+) -> str:
+    """Recorre las 4 keys Groq (primary → backup → org2 → org3, cada una una
+    organización con cuota TPD independiente). Ante RateLimitError pasa a la
+    siguiente; si se agotan todas, propaga el último error."""
+    call_kwargs = dict(
+        json_mode=json_mode, temperature=temperature, max_tokens=max_tokens,
+        timeout_key=timeout_key, timeout_default=timeout_default,
+    )
+    chain = [(lbl, k) for lbl, k in (
+        ("PRIMARY", primary_key), ("BACKUP", backup_key), ("ORG2", org2_key), ("ORG3", org3_key),
+    ) if k]
+    last_exc: GroqRateLimitError | None = None
+    for i, (label, key) in enumerate(chain):
+        try:
+            return _groq_call(key, messages, model, **call_kwargs)
+        except GroqRateLimitError as exc:
+            last_exc = exc
+            nxt = chain[i + 1][0] if i + 1 < len(chain) else None
+            if nxt:
+                print(f"[groq-fallback] {label} agotada, usando {nxt} — {fn_name}", flush=True)
+            else:
+                print(f"[groq-fallback] {label} agotada, sin más keys — {fn_name}: {exc}", flush=True)
+    raise last_exc  # type: ignore[misc]
+
+
+def call_groq_llm(prompt: str) -> str:
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return "Error: falta configurar GROQ_API_KEY."
+    backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
+    org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    messages = [
+        {"role": "system", "content": _llm_system_message() + _reasoning_suppression_suffix(GROQ_MODEL)},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        return _groq_with_fallback(
+            api_key, backup_key, "call_groq_llm", messages, GROQ_MODEL,
+            temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS, org2_key=org2_key, org3_key=org3_key,
+        )
+    except Exception as exc:
+        print(f"[groq] Error: {type(exc).__name__}: {exc}", flush=True)
+        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
+
+
+def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0,
+                   model: str | None = None) -> str:
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini. Devuelve el string
+    JSON crudo (el caller lo parsea/valida)."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return '{"error": "missing_groq_api_key"}'
+    backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
+    org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    effective_model = model or GROQ_MODEL
+    system_message = system_message + _reasoning_suppression_suffix(effective_model)
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        return _groq_with_fallback(
+            api_key, backup_key, "call_groq_json", messages, effective_model,
+            json_mode=True, temperature=temperature, max_tokens=GROQ_MAX_TOKENS,
+            timeout_key="GROQ_JSON_TIMEOUT_SECONDS", timeout_default="10",
+            org2_key=org2_key, org3_key=org3_key,
+        )
+    except Exception as exc:
+        print(f"[groq_json] Error: {type(exc).__name__}: {exc}", flush=True)
+        return f'{{"error": "{type(exc).__name__}"}}'
+
+
+def call_groq_with_system(system: str, user: str, *, temperature: float | None = None, max_tokens: int = 300) -> str:
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini. Acepta system
+    prompt externo en lugar de _llm_system_message()."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
+    backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
+    org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    t = temperature if temperature is not None else TEMPERATURE
+    messages = [
+        {"role": "system", "content": system + _reasoning_suppression_suffix(GROQ_MODEL)},
+        {"role": "user", "content": user},
+    ]
+    try:
+        return _groq_with_fallback(
+            api_key, backup_key, "call_groq_with_system", messages, GROQ_MODEL,
+            temperature=t, max_tokens=max_tokens, org2_key=org2_key, org3_key=org3_key,
+        )
+    except Exception as exc:
+        print(f"[groq_with_system] Error: {type(exc).__name__}: {exc}", flush=True)
+        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
+
+
 # ── Prompts de visión ────────────────────────────────────────────────────────
 # Prompt para imágenes: extrae SOLO datos de perfilamiento del funnel.
 _VISION_PROMPT_IMAGE = (
@@ -574,21 +739,109 @@ def _replace_birthdate_with_age(text: str) -> str:
     return "\n".join(line for line in out.splitlines() if line.strip()).strip()
 
 
+def call_groq_vision(
+    image_bytes: bytes,
+    *,
+    is_sticker: bool = False,
+    mime_type: str = "image/jpeg",
+) -> str:
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini para visión.
+    Aplica el mismo patrón de fallback de claves (primaria → BACKUP → ORG2 →
+    ORG3). Devuelve string vacío ante fallo o sin contenido útil."""
+    import base64
+
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        print("[groq_vision] Falta GROQ_API_KEY", flush=True)
+        return ""
+    if not image_bytes:
+        return ""
+
+    backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
+    org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    system_prompt = _VISION_PROMPT_STICKER if is_sticker else _VISION_PROMPT_IMAGE
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    data_url = f"data:{mime_type};base64,{b64}"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": data_url}}]},
+    ]
+
+    def _call(key: str) -> str:
+        timeout_secs = float(os.getenv("GROQ_VISION_TIMEOUT_SECONDS", "15"))
+        timeout = httpx.Timeout(timeout_secs, connect=5.0)
+        with httpx.Client(timeout=timeout) as http_client:
+            client = Groq(api_key=key, http_client=http_client)
+            completion = client.chat.completions.create(
+                model=GROQ_VISION_MODEL, messages=messages, temperature=0.0, max_tokens=200,
+            )
+        return (completion.choices[0].message.content or "").strip()
+
+    try:
+        result = _call(api_key)
+    except GroqRateLimitError:
+        if not backup_key:
+            print("[groq_vision] RateLimitError sin BACKUP configurado", flush=True)
+            return ""
+        print("[groq-fallback] cuota primaria agotada, usando BACKUP — call_groq_vision", flush=True)
+        try:
+            result = _call(backup_key)
+        except GroqRateLimitError as exc2:
+            print(f"[groq-fallback] BACKUP también agotada — call_groq_vision: {exc2}", flush=True)
+            if org2_key:
+                print("[groq-fallback] usando ORG2 — call_groq_vision", flush=True)
+                try:
+                    result = _call(org2_key)
+                except Exception as exc3:
+                    print(f"[groq_vision] ORG2 falló: {type(exc3).__name__}: {exc3}", flush=True)
+                    if org3_key:
+                        print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                        try:
+                            result = _call(org3_key)
+                        except Exception as exc4:
+                            print(f"[groq_vision] ORG3 falló: {type(exc4).__name__}: {exc4}", flush=True)
+                            return ""
+                    else:
+                        return ""
+            elif org3_key:
+                print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                try:
+                    result = _call(org3_key)
+                except Exception as exc3:
+                    print(f"[groq_vision] ORG3 falló: {type(exc3).__name__}: {exc3}", flush=True)
+                    return ""
+            else:
+                return ""
+        except Exception as exc2:
+            print(f"[groq_vision] BACKUP falló: {type(exc2).__name__}: {exc2}", flush=True)
+            return ""
+    except Exception as exc:
+        print(f"[groq_vision] Error: {type(exc).__name__}: {exc}", flush=True)
+        return ""
+
+    if not is_sticker and result:
+        result = _replace_birthdate_with_age(result)
+
+    return result
+
+
 def call_gemini_llm(prompt: str) -> str:
-    """Generación RAG vía Gemini (proveedor ÚNICO — Groq y Cohere eliminados
-    2026-07-07) con el system message de Mundo y config propia GEMINI_* (no se
-    reciclan constantes GROQ_*). Ante fallo devuelve el mensaje de disculpa estándar
-    (contrato de error del caller), sin invocar otro proveedor."""
-    from app.gemini_client import (
-        GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, GeminiError, dispatch_generation,
-    )
+    """Generación RAG vía Gemini (proveedor PRIMARIO) con el system message de
+    Mundo y config propia GEMINI_* (no se reciclan constantes GROQ_*).
+
+    El fallback a Groq ante fallo de Gemini vive DENTRO de `dispatch_generation`
+    (gemini_client.py — capa única, evita doble fallback); aquí solo se preserva
+    un último catch-all por si esa capa también propagara algo inesperado."""
+    from app.gemini_client import GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, dispatch_generation
 
     try:
         return dispatch_generation(
             _llm_system_message(), prompt,
             temperature=GEMINI_TEMPERATURE, max_tokens=GEMINI_MAX_TOKENS,
         )
-    except GeminiError as exc:
+    except Exception as exc:
         print(f"[gemini] Error: {exc}", flush=True)
         return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
 

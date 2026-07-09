@@ -36,7 +36,9 @@ class TestGenerateText:
 
         with mock.patch("httpx.post", side_effect=_capture):
             gc.generate_text("hola")
-        assert "/gemini-2.5-flash:generateContent" in captured["url"]
+        # gemini-2.5-flash fue RETIRADO por Google (404, verificado 2026-07-08) —
+        # el default vigente es gemini-3.5-flash.
+        assert "/gemini-3.5-flash:generateContent" in captured["url"]
 
     def test_success(self):
         with mock.patch("httpx.post", return_value=_fake_response(text="hola")):
@@ -119,32 +121,44 @@ class TestGenerateVision:
         assert captured["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0
 
 
-# ── dispatch Gemini-único: sin Groq ni en fallo ───────────────────────────────
+# ── dispatch: Gemini primario, Groq fallback TEMPORAL (2026-07-09) ────────────
+# gemini-3.5-flash con 503 "high demand" sostenido — ver docstring de indexer.py
+# y gemini_client.py. Groq NUNCA se llama si Gemini responde (mock de httpx.post
+# intercepta ANTES de que exista una respuesta real); solo entra ante fallo.
 
 @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
-class TestDispatchGeminiOnly:
-    def test_generation_success(self):
-        with mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")):
+class TestDispatchGeminiPrimaryGroqFallback:
+    def test_generation_success_never_calls_groq(self):
+        with mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")), \
+             mock.patch("app.indexer.call_groq_with_system") as m_groq:
             assert gc.dispatch_generation("sys", "user") == "desde gemini"
+        m_groq.assert_not_called()
 
-    def test_generation_failure_propagates_no_groq(self):
-        # El caller decide el fallback determinista; Groq NUNCA se invoca.
-        from app import indexer
-        assert not hasattr(indexer, "call_groq_with_system")
-        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)):
-            with pytest.raises(gc.GeminiError):
-                gc.dispatch_generation("sys", "user")
+    def test_generation_failure_falls_back_to_groq(self):
+        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)), \
+             mock.patch("app.indexer.call_groq_with_system", return_value="desde groq") as m_groq:
+            out = gc.dispatch_generation("sys", "user")
+        assert out == "desde groq"
+        m_groq.assert_called_once()
 
-    def test_json_success(self):
-        with mock.patch("httpx.post", return_value=_fake_response(text='{"a": 1}')):
+    def test_json_success_never_calls_groq(self):
+        with mock.patch("httpx.post", return_value=_fake_response(text='{"a": 1}')), \
+             mock.patch("app.indexer.call_groq_json") as m_groq:
             assert json.loads(gc.dispatch_json("prompt", "system")) == {"a": 1}
+        m_groq.assert_not_called()
 
-    def test_json_failure_returns_error_contract_no_groq(self):
-        # Mismo contrato que la extracción fallida anterior: JSON de error →
-        # señales neutras / extracción vacía; el turno sigue.
-        from app import indexer
-        assert not hasattr(indexer, "call_groq_json")
-        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")):
+    def test_json_failure_falls_back_to_groq(self):
+        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")), \
+             mock.patch("app.indexer.call_groq_json", return_value='{"b": 2}') as m_groq:
+            out = gc.dispatch_json("prompt", "system")
+        assert json.loads(out) == {"b": 2}
+        m_groq.assert_called_once()
+
+    def test_json_failure_groq_also_fails_returns_error_contract(self):
+        # Si Gemini Y Groq fallan, el contrato de error se preserva (extracción
+        # vacía / señales neutras) en vez de propagar una excepción.
+        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")), \
+             mock.patch("app.indexer.call_groq_json", side_effect=RuntimeError("groq caído")):
             out = gc.dispatch_json("prompt", "system")
         assert json.loads(out) == {"error": "gemini_error"}
 
@@ -172,14 +186,22 @@ class TestDispatchGeminiOnly:
         import inspect
         assert "model" not in inspect.signature(gc.dispatch_json).parameters
 
-    def test_vision_success(self):
-        with mock.patch("httpx.post", return_value=_fake_response(text="tipo_documento: ine")):
+    def test_vision_success_never_calls_groq(self):
+        with mock.patch("httpx.post", return_value=_fake_response(text="tipo_documento: ine")), \
+             mock.patch("app.indexer.call_groq_vision") as m_groq:
             assert gc.dispatch_vision(b"img", "prompt") == "tipo_documento: ine"
+        m_groq.assert_not_called()
 
-    def test_vision_failure_returns_empty_no_groq(self):
-        from app import indexer
-        assert not hasattr(indexer, "call_groq_vision")
-        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)):
+    def test_vision_failure_falls_back_to_groq(self):
+        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)), \
+             mock.patch("app.indexer.call_groq_vision", return_value="desde groq") as m_groq:
+            out = gc.dispatch_vision(b"img", "prompt")
+        assert out == "desde groq"
+        m_groq.assert_called_once()
+
+    def test_vision_failure_groq_also_fails_returns_empty(self):
+        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)), \
+             mock.patch("app.indexer.call_groq_vision", side_effect=RuntimeError("groq caído")):
             assert gc.dispatch_vision(b"img", "prompt") == ""
 
     def test_audio_success(self):
@@ -207,20 +229,26 @@ class TestDispatchGeminiOnly:
 # ── call_llm: Gemini único, contrato de error del caller ─────────────────────
 
 @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
-class TestCallLlmGeminiOnly:
-    def test_routes_through_gemini(self):
+class TestCallLlmGeminiPrimaryGroqFallback:
+    def test_routes_through_gemini_never_calls_groq_on_success(self):
         from app import indexer
-        assert not hasattr(indexer, "call_groq_llm")
-        with mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")):
+        with mock.patch("httpx.post", return_value=_fake_response(text="desde gemini")), \
+             mock.patch("app.indexer.call_groq_with_system") as m_groq:
             out = indexer.call_llm("hola")
         assert out == "desde gemini"
+        m_groq.assert_not_called()
 
-    def test_failure_returns_apology_no_groq(self):
+    def test_failure_falls_back_to_groq_temporal(self):
+        # El fallback vive en dispatch_generation (gemini_client.py, capa única —
+        # ver su docstring); call_gemini_llm (indexer.py) solo re-propaga lo que
+        # esa capa devuelva. TEMPORAL 2026-07-09 mientras gemini-3.5-flash da 503
+        # sostenido.
         from app import indexer
-        assert not hasattr(indexer, "call_groq_llm")
-        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)):
+        with mock.patch("httpx.post", return_value=_fake_response(status_code=429)), \
+             mock.patch("app.indexer.call_groq_with_system", return_value="desde groq") as m_groq:
             out = indexer.call_llm("hola")
-        assert "problema" in out.lower()
+        assert out == "desde groq"
+        m_groq.assert_called_once()
 
     def test_uses_gemini_config_not_groq_constants(self):
         from app import indexer

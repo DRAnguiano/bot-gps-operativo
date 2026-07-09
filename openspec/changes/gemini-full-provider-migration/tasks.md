@@ -95,6 +95,15 @@
 
 ## 7. Retiro físico de Groq (D7 — SOLO al final)
 
+> **EXCEPCIÓN TEMPORAL activa (2026-07-09)**: `gemini-3.5-flash` con 503 "high
+> demand" sostenido en ambas keys abortaba turnos vía `[LLM_GATE]` y bloqueaba
+> `controlled-agentic-profiling` Bloque 4. Groq fue RESTAURADO como fallback (no
+> primario) dentro de `dispatch_generation`/`dispatch_json`/`dispatch_vision`
+> (`gemini_client.py`), usando las 4 keys/orgs ya existentes en `.env` — ver nota
+> "Excepción temporal" en `design.md` bajo D1. Este bloque 7 (retiro físico) queda
+> en pausa hasta que la excepción se retire (Gemini estable o tier pago) y el
+> sistema vuelva a D1 estricto.
+
 - [ ] 7.1 Verificación en vivo de los 4 caminos (texto, JSON, visión, audio) vía
       Gemini con cadencia; logs sin `call_groq`.
 - [ ] 7.2 Eliminar `call_groq_*`, `_groq_with_fallback`, `GroqRateLimitError`,
