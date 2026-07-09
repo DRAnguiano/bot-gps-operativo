@@ -13,7 +13,11 @@ import os
 import httpx
 
 _API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-_DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+_DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+# gemini-2.5-flash fue RETIRADO por Google (404 "no longer available", verificado
+# 2026-07-08 en vivo). gemini-3.5-flash confirmado disponible (503 de sobrecarga
+# transitoria, no 404 — el modelo existe). Revisar `GET /v1beta/models` si vuelve
+# a fallar: los IDs de modelo de Gemini no son estables a largo plazo.
 
 # Config propia de Gemini (no se reciclan las constantes GROQ_*, deprecadas):
 GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "500") or 500)
