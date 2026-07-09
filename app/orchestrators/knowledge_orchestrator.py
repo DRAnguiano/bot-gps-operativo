@@ -2386,6 +2386,51 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             log.warning("[MULTI_INTENT_SHADOW] no se pudo ejecutar: %s", exc)
 
+    # Shadow agéntico (controlled-agentic-profiling B3, design.md D3): compara la
+    # conducción del agente (AgentDecision, ya computada en la MISMA llamada del
+    # extractor unificado — cero costo extra) contra la decisión determinista del
+    # funnel. Read-only: no toca reply/labels/Nota IA. Flag-gated, nunca puede
+    # romper el turno (try/except, mismo patrón que MULTI_INTENT_SHADOW).
+    if _env_bool("AGENTIC_PROFILING_SHADOW", False) and _pre_extraction is not None:
+        try:
+            from app.knowledge.agent_decision_validator import build_shadow_log, validate_agent_decision
+            from app.knowledge.current_turn import next_question_from_missing_facts
+            from app.lead_memory.profile_extractor import missing_profile_fields
+
+            _known_before = {
+                f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+                for r in (lead_memory_before.get("facts") or [])
+                if isinstance(r, dict) and r.get("fact_value")
+            }
+            _agent_decision = _pre_extraction.agent_decision
+            _deterministic_requires_human = bool(contract.get("requires_human"))
+            _validated = validate_agent_decision(
+                _agent_decision,
+                raw_message=message,
+                known_facts=_known_before,
+                deterministic_requires_human=_deterministic_requires_human,
+            )
+            _facts_now = dict(_known_before)
+            for _f in (_pre_validated or []):
+                if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                    _facts_now[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+            _deterministic_keys = {
+                f"{f['fact_group']}.{f['fact_key']}"
+                for f in (_pre_validated or [])
+                if f.get("fact_group") and f.get("fact_key")
+            }
+            log.info("[AGENTIC_SHADOW] %s", build_shadow_log(
+                conversation_key=conversation_key,
+                agent_decision=_agent_decision,
+                validated=_validated,
+                funnel_question=next_question_from_missing_facts(_facts_now),
+                funnel_missing_labels=missing_profile_fields(_facts_now),
+                deterministic_fact_keys=_deterministic_keys,
+                deterministic_requires_human=_deterministic_requires_human,
+            ))
+        except Exception as exc:
+            log.warning("[AGENTIC_SHADOW] no se pudo ejecutar: %s", exc)
+
     timings = {"total_ms": round((time.perf_counter() - started) * 1000, 2)}
     if rag_result and isinstance(rag_result.get("timings"), dict):
         timings.update(rag_result["timings"])

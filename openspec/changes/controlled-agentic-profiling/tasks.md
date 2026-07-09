@@ -44,12 +44,26 @@
 
 ## 3. Shadow en el orchestrator
 
-- [ ] 3.1 Hook en `handle_message` bajo `AGENTIC_PROFILING_SHADOW` (default false):
-      hilo daemon no bloqueante (patrón composer shadow), log `[AGENTIC_SHADOW]`
-      con diff {same_question, funnel_question, agent_question, facts_diff,
-      missing_diff, rejected_facts, handoff_diff, crm_note}. Cero cambios en reply/
-      labels/Nota IA. Tests con mocks (shadow no altera el resultado del turno).
-- [ ] 3.2 Suite completa en verde con el shadow apagado Y encendido (mockeado).
+- [x] 3.1 Hook en `handle_message` bajo `AGENTIC_PROFILING_SHADOW` (default false),
+      DESPUÉS de `save_message(..., "assistant", reply)` y ANTES del return —
+      nunca puede influir en lo ya persistido/enviado. Sin hilo daemon: no hace
+      falta (D1 ya dijo que AgentDecision viene de la MISMA llamada del extractor,
+      cero I/O extra aquí — solo comparación de datos ya computados, igual de
+      barato que MULTI_INTENT_SHADOW, cuyo patrón try/except síncrono se reutiliza
+      tal cual en vez de inventar threading). `build_shadow_log` extraído como
+      función PURA en `agent_decision_validator.py` (testeable sin DB —
+      `handle_message` requiere ~10 conexiones Postgres reales por diseño). Log
+      con {conversation_key, funnel_question, agent_next_action, agent_next_field,
+      agent_public_reply, facts_only_deterministic, facts_only_agent, facts_agreed,
+      missing_diff, rejected_facts, uncertainty_flags, handoff_deterministic,
+      handoff_agent_recommended, handoff_diff, crm_note}. `same_question` booleano
+      descartado: comparaba texto de pregunta contra field-key, siempre falso por
+      diseño — se loguean ambos crudos para revisión humana en su lugar.
+      6 tests de `build_shadow_log` + 1 test estructural (hook después de
+      save_message, envuelto en try/except).
+- [x] 3.2 Suite completa en verde: 924 passed, 0 failed (shadow apagado por
+      default — `AGENTIC_PROFILING_SHADOW=false`; el camino encendido se prueba
+      vía `build_shadow_log` con datos mockeados, sin DB).
 - [ ] 3.3 Activar `AGENTIC_PROFILING_SHADOW=true` en staging; conversaciones de
       prueba del usuario (cadencia 20s) cubriendo: funnel ordenado, datos en
       desorden, duda+dato, corrección, insistencia. Recolectar logs.

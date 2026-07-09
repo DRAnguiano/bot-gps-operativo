@@ -148,3 +148,52 @@ def validate_agent_decision(
 def resolve_handoff(deterministic_requires_human: bool, decision: AgentDecision) -> bool:
     """Helper standalone (D2): OR puro — el agente solo puede ACTIVAR, nunca desactivar."""
     return deterministic_requires_human or bool(decision.handoff_recommendation.recommended)
+
+
+def build_shadow_log(
+    *,
+    conversation_key: str,
+    agent_decision: AgentDecision,
+    validated: ValidatedAgentDecision,
+    funnel_question: str,
+    funnel_missing_labels: list[str],
+    deterministic_fact_keys: set[str],
+    deterministic_requires_human: bool,
+) -> dict[str, Any]:
+    """Payload puro (sin I/O) del log `[AGENTIC_SHADOW]` (Bloque 3, design.md D3).
+
+    Extraído como función pura para poder testear la construcción del diff sin
+    levantar `handle_message` completo (requiere DB real por diseño — ver su
+    docstring). El hook en el orchestrator solo llama esto y hace `log.info`.
+    """
+    agent_keys = {f"{c['fact_group']}.{c['fact_key']}" for c in validated.certified_facts}
+    agent_next_field = (
+        agent_decision.next_action.split(":", 1)[1]
+        if agent_decision.next_action and agent_decision.next_action.startswith("ask_field:")
+        else None
+    )
+    return {
+        "conversation_key": conversation_key,
+        # La pregunta del funnel es TEXTO y el next_action del agente es un CAMPO
+        # canónico — no son comparables por igualdad; se loguean ambos crudos para
+        # revisión humana (gate 4.1 de tasks.md), no como un booleano "acertó".
+        "funnel_question": funnel_question[:200],
+        "agent_next_action": agent_decision.next_action,
+        "agent_next_field": agent_next_field,
+        "agent_public_reply": (agent_decision.public_reply or "")[:200],
+        "facts_only_deterministic": sorted(deterministic_fact_keys - agent_keys),
+        "facts_only_agent": sorted(agent_keys - deterministic_fact_keys),
+        "facts_agreed": sorted(deterministic_fact_keys & agent_keys),
+        "missing_diff": {
+            "funnel_missing": funnel_missing_labels,
+            "agent_missing": agent_decision.missing_fields,
+        },
+        "rejected_facts": [
+            {"field": r.field, "value": r.value, "reason": r.reason} for r in validated.rejected_facts
+        ],
+        "uncertainty_flags": validated.uncertainty_flags,
+        "handoff_deterministic": deterministic_requires_human,
+        "handoff_agent_recommended": agent_decision.handoff_recommendation.recommended,
+        "handoff_diff": validated.handoff_recommended != deterministic_requires_human,
+        "crm_note": agent_decision.crm_private_note,
+    }

@@ -55,12 +55,20 @@ API para que el agente los escriba. `handoff_recommendation` solo puede ACTIVAR
 revisión humana; nunca desactivar un `requires_human` ya decidido por los overrides
 deterministas (B1, reingreso, edad).
 
-**D3 — Shadow no bloqueante (patrón del composer shadow ya en prod).**
-Con `AGENTIC_PROFILING_SHADOW=true`: `handle_message` construye y valida el
-`AgentDecision` en hilo daemon y loguea `[AGENTIC_SHADOW]`:
-`{same_question, funnel_question, agent_question, facts_diff, missing_diff,
-rejected_facts, handoff_diff, crm_note}`. El candidato recibe el reply del flujo
-actual, la Nota IA no cambia, cero etiquetas del agente.
+**D3 — Shadow síncrono, sin threading (corrige la premisa original).** La
+propuesta asumía un "composer shadow en hilo daemon" ya en prod — verificado al
+implementar: ese patrón no existe en el código (`grep` de `threading.Thread` da
+cero resultados); el patrón real y probado es `MULTI_INTENT_SHADOW`, síncrono con
+try/except. Además, no hace falta threading aquí: D1 ya establece que
+`AgentDecision` viene de la MISMA llamada del extractor (cero I/O extra) — el
+hook solo compara datos ya computados en memoria, tan barato como
+`MULTI_INTENT_SHADOW`. Con `AGENTIC_PROFILING_SHADOW=true`, `handle_message`
+valida el `AgentDecision` (después de `save_message` del reply, antes del
+`return`) y loguea `[AGENTIC_SHADOW]` vía `build_shadow_log` (función pura,
+testeable sin DB): `{funnel_question, agent_next_action, agent_next_field,
+facts_only_deterministic/agent/agreed, missing_diff, rejected_facts,
+uncertainty_flags, handoff_diff, crm_note}`. El candidato recibe el reply del
+flujo actual, la Nota IA no cambia, cero etiquetas del agente.
 
 **D4 — Activación incremental por bloques, cada uno con gate.**
 Orden: (1) `next_action`/orden de preguntas — el gap real del funnel rígido (datos
