@@ -73,6 +73,14 @@ TEMPERATURE = float(getattr(settings, "TEMPERATURE", os.getenv("TEMPERATURE", "0
 GROQ_MODEL = getattr(settings, "GROQ_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
 GROQ_MAX_TOKENS = int(getattr(settings, "GROQ_MAX_TOKENS", os.getenv("GROQ_MAX_TOKENS", "900")))
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+# TEMPORAL (2026-07-09): gpt-oss-120b (GROQ_MODEL) devuelve 400 json_validate_failed
+# con el schema extenso del extractor unificado (agent_decision anidado, conv 172
+# mensaje con 6+ datos). qwen/qwen3.6-27b sí existe en Groq (confirmado por el
+# usuario vs. mi suposición inicial errónea); el primer intento falló porque el
+# sufijo "/no_think" (válido para qwen3-32b) no aplica a esta generación — Qwen3.6
+# controla el razonamiento por el parámetro reasoning_effort, ya manejado en
+# _groq_call vía extra_body.
+GROQ_JSON_MODEL = os.getenv("GROQ_JSON_MODEL", "qwen/qwen3.6-27b")
 
 
 # Cohere Rerank.
@@ -534,8 +542,15 @@ def _groq_call(
     kwargs: dict = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    if "gpt-oss" in (model or "").lower():
+    _lower_model = (model or "").lower()
+    if "gpt-oss" in _lower_model:
         kwargs["extra_body"] = {"reasoning_effort": "low", "reasoning_format": "hidden"}
+    elif "qwen3.6" in _lower_model or "qwen3-6" in _lower_model:
+        # Qwen3.6 controla el modo de razonamiento por parámetro (reasoning_effort),
+        # no por el sufijo de texto "/no_think" que usa qwen3 (versión anterior) —
+        # sin esto el modelo emite <think> y rompe json_object mode (visto en vivo:
+        # 400 json_validate_failed con failed_generation vacío).
+        kwargs["extra_body"] = {"reasoning_effort": "none", "reasoning_format": "hidden"}
     with httpx.Client(timeout=timeout) as http_client:
         client = Groq(api_key=api_key, http_client=http_client)
         completion = client.chat.completions.create(**kwargs)
@@ -613,7 +628,7 @@ def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
     org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
-    effective_model = model or GROQ_MODEL
+    effective_model = model or GROQ_JSON_MODEL
     system_message = system_message + _reasoning_suppression_suffix(effective_model)
     messages = [
         {"role": "system", "content": system_message},

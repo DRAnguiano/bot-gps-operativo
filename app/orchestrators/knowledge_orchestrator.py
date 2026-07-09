@@ -760,6 +760,49 @@ def _apply_business_rule_overrides(message: str, contract: dict[str, Any], turn_
     return contract
 
 
+def _override_rag_hijack_on_data_turn(
+    contract: dict[str, Any],
+    message: str,
+    extraction: Any,
+    turn_signals: Any,
+) -> dict[str, Any]:
+    """Un turno que solo APORTA datos de perfil no es una pregunta de requisitos.
+
+    Clase conv-166/172 (D6 gemini-full-provider-migration): aliases de una palabra
+    del Term `documentos_requisitos` ("licencia", "apto", "cartas laborales",
+    "vigente") secuestran mensajes que solo declaran datos ("tengo licencia E
+    vigente y cartas laborales") → ruta rag responde la lista genérica de
+    requisitos en vez de confirmar los datos y avanzar el funnel. El juicio
+    semántico es del extractor unificado (has_embedded_question distingue por
+    few-shots "tengo licencia E" de "¿qué licencia piden?"): si el LLM dice que
+    NO hay pregunta y el turno trae facts extraídos, la ruta rag del diccionario
+    se revierte al funnel de perfilamiento. Un "?" literal en el mensaje conserva
+    la ruta rag (cinturón: nunca silenciar una pregunta explícita).
+    """
+    if str(contract.get("route") or "") != "rag":
+        return contract
+    if extraction is None or not getattr(extraction, "fields", None):
+        return contract
+    if bool(getattr(turn_signals, "has_embedded_question", False)):
+        return contract
+    if "?" in (message or "") or "¿" in (message or ""):
+        return contract
+    updated = dict(contract)
+    updated.update({
+        "route": "profile",
+        "intent": "candidate_profile_signal",
+        "requires_rag": False,
+        "requires_clarification": False,
+        "reason": "rag_hijack_data_turn_override",
+    })
+    log.info(
+        "[RAG_HIJACK_OVERRIDE] ruta rag revertida a funnel: fields=%s terms=%s",
+        sorted(getattr(extraction, "fields", {}) or {}),
+        contract.get("recognized_terms"),
+    )
+    return updated
+
+
 # Léxico de vigencia: el bot NUNCA emite "caduca/caducidad" al candidato; usa
 # "vence/vencimiento/vigencia". Opera sobre el texto de salida (preserva mayúsculas/
 # acentos), no sobre texto normalizado. Idempotente.
@@ -1935,6 +1978,8 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     contract = _apply_profile_guards(message, contract)
     contract = _apply_deterministic_overrides(message, contract)
     contract = _apply_business_rule_overrides(message, contract, turn_signals=turn_signals)
+    if _pre_extraction is not None:
+        contract = _override_rag_hijack_on_data_turn(contract, message, _pre_extraction, turn_signals)
 
     # ── 5a: Pre-handoff condicional ───────────────────────────────────────────
     # Antes de canalizar a Capital Humano, el bot verifica el dato mínimo que
