@@ -25,6 +25,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.knowledge.agent_decision import AgentDecision, parse_agent_decision
 from app.knowledge.turn_intent_classifier import TurnIntentSignals
 from app.knowledge.geo_utils import normalize_zm_laguna_city
 from app.knowledge.llm_errors import LLMUnavailableError
@@ -63,6 +64,10 @@ class TurnExtraction:
     fields: dict[str, FieldValue] = field(default_factory=dict)
     embedded_question: str | None = None
     signals: TurnIntentSignals = field(default_factory=TurnIntentSignals)
+    # controlled-agentic-profiling B1 (SHADOW): decisión del agente, sin autoridad
+    # propia — nada de esto llega a BD/reply/labels sin pasar por
+    # agent_decision_validator (Bloque 2).
+    agent_decision: AgentDecision = field(default_factory=AgentDecision)
 
     def value(self, key: str) -> str | None:
         fv = self.fields.get(key)
@@ -91,7 +96,17 @@ Extrae TODO lo que el candidato dijo en ESTE mensaje, en una sola pasada. Devuel
   "signals": {
     "is_ya_reclamo": <bool>, "is_memory_claim": <bool>, "has_embedded_question": <bool>,
     "call_requested": <bool>, "renewal_proof": <"si"|"no"|null>, "no_road_experience": <bool>,
-    "has_expiry_context": <bool>, "experience_context": <bool>
+    "has_expiry_context": <bool>, "experience_context": <bool>, "is_joke_request": <bool>,
+    "conversational_purpose": <"smalltalk"|"queja"|"agradecimiento"|"despedida"|"animo"|"none">
+  },
+  "agent_decision": {
+    "public_reply": <str>,
+    "proposed_facts": [{"field": <str>, "value": <str>, "evidence": <str>, "confidence": <0.0-1.0>}],
+    "next_action": <"ask_field:<campo>"|"answer_question"|"acknowledge"|"close_profile"|"handoff"|"wait">,
+    "missing_fields": [<str>],
+    "uncertainty_flags": [<str>],
+    "crm_private_note": <str|null>,
+    "handoff_recommendation": {"recommended": <bool>, "reason": <str|null>}
   }
 }
 
@@ -113,6 +128,22 @@ REGLAS DE VALOR (qué dijo el candidato — NO interpretes política de negocio)
 - license.expiration_text: cuánto falta para que venza la licencia ("2 años","6 meses","vencido"). Solo si habla de vigencia de LICENCIA.
 - medical.apto_expiration_text: vigencia del apto médico. Si dice "igual/lo mismo que mi licencia" y conoces license.expiration_text, usa ESE valor.
 - documents.proof: "cartas" si tiene cartas laborales, "semanas_imss" si tiene semanas del IMSS, "ninguno" si dice que NO tiene. Si no menciona, null.
+
+is_joke_request: el candidato PIDE que le cuenten un chiste/broma para animarlo. Distingue del uso
+IDIOMÁTICO de "chiste"/"broma" como queja o sarcasmo (= "qué ridículo"), que NO es una petición.
+  true: "cuéntame un chiste", "no sabe contar chistes?", "échese una broma para animarme"
+  false: "así que chiste", "qué chiste de proceso", "esto es una broma verdad"
+
+conversational_purpose: la FINALIDAD conversacional del mensaje cuando NO es dar un dato de perfil
+ni hacer una pregunta de negocio.
+  "smalltalk": plática casual sin tema de negocio ("qué calorón hoy", "ando comiendo, ahorita sigo")
+  "queja": molestia/frustración con el proceso ("son bien lentos", "puro trámite y trámite")
+  "agradecimiento": gracias genuinas ("muchas gracias por la info", "muy amable")
+  "despedida": cierre de conversación ("hasta luego", "nos vemos, buenas noches")
+  "animo": busca motivación/confianza sobre su proceso ("usted cree que sí quede?", "estoy nervioso")
+  "none": dato de perfil, pregunta de negocio, o cualquier otra cosa ("soy de Torreón", "cuánto pagan")
+  Si el mensaje MEZCLA dato/pregunta con finalidad conversacional, el dato/pregunta manda: usa "none"
+  salvo que la parte conversacional sea el punto principal del mensaje.
 
 REGLAS DE EVIDENCIA:
 - explicit_marker = true cuando el candidato usó un marcador explícito ("me llamo","soy de","vivo en","mi licencia vence en","tengo X años").
@@ -176,6 +207,44 @@ Ejemplos:
 - "vivo en Houston" (sin mención de B1) → candidate.city=null (ciudad de EEUU sin contexto B1;
   no hay lectura mexicana plausible del nombre — no la inventes ni la aceptes como residencia)
 
+AGENT_DECISION (controlled-agentic-profiling — MODO SHADOW, no se usa aún en la
+respuesta real; solo se loguea para comparar contra el funnel actual):
+- public_reply: tu respuesta natural al candidato para ESTE turno — confirma lo que
+  dijo, responde su duda si la hizo, y pregunta el SIGUIENTE dato que falte de
+  DATOS YA CONOCIDOS. Nunca preguntes algo que ya está en "DATOS YA CONOCIDOS" ni
+  algo que el candidato acaba de dar en este mismo mensaje.
+- proposed_facts: SOLO datos con evidencia LITERAL en el mensaje de este turno
+  (el sistema descarta cualquier fact cuya evidencia no aparezca tal cual en el
+  mensaje — no repitas aquí lo que ya viene en "fields", es el mismo espíritu con
+  formato distinto). confidence: qué tan explícito fue el dato (marcador claro=0.9+,
+  inferencia razonable=0.7-0.8, dudoso=<0.6).
+- next_action: qué harías tú a continuación. "ask_field:<campo>" con el campo
+  canónico (candidate.name, candidate.city, candidate.age, experience.vehicle_type,
+  license.category, license.expiration_text, medical.apto_expiration_text,
+  documents.proof). "close_profile" SOLO si de verdad no falta nada de la lista de
+  DATOS YA CONOCIDOS + lo dicho en este turno.
+- missing_fields: tu lista de campos que crees que faltan (el sistema tiene la
+  suya propia y las compara — no se penaliza que difieran, es lo que se mide).
+- uncertainty_flags: ambigüedades que NO quisiste resolver solo (p. ej. "dijo caja
+  seca, no estoy seguro si es full o sencillo").
+- crm_private_note: 1 frase de contexto útil para el reclutador humano, o null si
+  no hay nada que agregar (nunca inventes ni repitas los facts, eso ya está en la
+  Nota IA).
+- handoff_recommendation: recommended=true SOLO si detectas algo que un humano
+  debería revisar (duda seria, señal de riesgo, situación fuera de lo normal) —
+  nunca lo uses para decidir si el candidato califica o no.
+
+Ejemplos de agent_decision (formato abreviado, solo lo relevante):
+- "soy de Lerdo, manejo full desde hace 10 años y mi licencia E vence en 2027" (bot
+  preguntó el nombre) → proposed_facts=[city=Lerdo, vehicle_type=full, years=10,
+  license.category=E, license.expiration_text=2027 (todos con evidencia literal)],
+  next_action="ask_field:candidate.name" (lo único que sigue faltando)
+- "no sé, tal vez unos 8 años, no me acuerdo bien" → proposed_facts=[] (sin
+  evidencia firme, confidence bajo no vale la pena proponerlo),
+  uncertainty_flags=["años de experiencia inciertos"], next_action="ask_field:experience.years"
+- "así que chiste todo esto, ya llevo rato esperando" → agent_decision.public_reply
+  reconoce la molestia con empatía; next_action="acknowledge"; NO se propone ningún fact
+
 IMPORTANTE: Responde SOLO el JSON. value siempre es lo que el candidato DIJO, nunca una inferencia de negocio."""
 
 
@@ -191,9 +260,13 @@ def _parse_field(raw: Any) -> FieldValue:
     )
 
 
+_CONVERSATIONAL_PURPOSES = {"smalltalk", "queja", "agradecimiento", "despedida", "animo", "none"}
+
+
 def _parse_signals(raw: Any) -> TurnIntentSignals:
     if not isinstance(raw, dict):
         return TurnIntentSignals()
+    _purpose = str(raw.get("conversational_purpose") or "none")
     return TurnIntentSignals(
         is_ya_reclamo=bool(raw.get("is_ya_reclamo", False)),
         is_memory_claim=bool(raw.get("is_memory_claim", False)),
@@ -203,6 +276,8 @@ def _parse_signals(raw: Any) -> TurnIntentSignals:
         no_road_experience=bool(raw.get("no_road_experience", False)),
         has_expiry_context=bool(raw.get("has_expiry_context", False)),
         experience_context=bool(raw.get("experience_context", False)),
+        is_joke_request=bool(raw.get("is_joke_request", False)),
+        conversational_purpose=_purpose if _purpose in _CONVERSATIONAL_PURPOSES else "none",
     )
 
 
@@ -260,6 +335,7 @@ def extract_turn(
         fields=fields,
         embedded_question=str(embedded).strip() if embedded else None,
         signals=_parse_signals(data.get("signals")),
+        agent_decision=parse_agent_decision(data.get("agent_decision")),
     )
 
 

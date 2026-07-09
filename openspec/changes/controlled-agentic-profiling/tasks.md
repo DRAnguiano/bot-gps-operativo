@@ -5,14 +5,24 @@
 
 ## 1. AgentDecision — schema y parsing
 
-- [ ] 1.1 `app/knowledge/agent_decision.py`: dataclass `AgentDecision`
+- [x] 1.1 `app/knowledge/agent_decision.py`: dataclass `AgentDecision`
       (public_reply, proposed_facts[{field,value,evidence,confidence}], next_action,
       missing_fields, uncertainty_flags, crm_private_note, handoff_recommendation) +
       parsing tolerante desde el JSON del turno (campo ausente → default neutro;
-      next_action fuera de catálogo → None). Tests con mocks.
-- [ ] 1.2 Extender el schema de `_TURN_INTENT_SYSTEM` con la sección
-      `agent_decision` + few-shots (caso desordenado multi-dato, caso duda+dato,
-      caso queja sin datos). Medir tokens del prompt antes/después. Tests de parsing.
+      next_action fuera de catálogo → None). 13 tests, sin LLM.
+- [x] 1.2 Hallazgo previo a esta tarea: `is_joke_request`/`conversational_purpose`
+      (Bloque 6 de gemini-full-provider-migration) se habían agregado SOLO al
+      prompt de `turn_intent_classifier.py`, que el worker NO llama en el camino
+      vivo — `extract_turn` (turn_extractor.py) tiene su propio prompt/parser de
+      señales duplicado y nunca los pedía ni parseaba. `is_joke_request` estaba
+      muerto en producción (siempre False). Corregido: ambos campos agregados al
+      schema y `_parse_signals` de `turn_extractor.py` (6 tests de paridad nuevos).
+      Extendido el schema de `_TURN_EXTRACTOR_SYSTEM` (el prompt real del camino
+      vivo, no `_TURN_INTENT_SYSTEM`) con la sección `agent_decision` + reglas +
+      3 few-shots (multi-dato desordenado, dato incierto, queja sin datos).
+      Tokens del prompt: ~2655 → ~3435 (+779, +29%). `TurnExtraction.agent_decision`
+      poblado en `extract_turn` vía `parse_agent_decision`. Suite completa
+      (898 tests) verde tras el cambio.
 
 ## 2. Validador — frontera de autoridad
 
