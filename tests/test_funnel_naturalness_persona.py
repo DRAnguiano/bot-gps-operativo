@@ -42,12 +42,14 @@ def test_sin_nombre_omite_vocativo_sin_fallar():
 # ── Copy de unidad sin redundancia ──────────────────────────────────────────
 
 def test_copy_unidad_sin_redundancia():
+    # Copy consolidada (gemini-full-provider-migration B1-B3, dedup de
+    # vehicle_vacancy_question entre current_turn/intent_orchestrator/orchestrator).
     facts = {"candidate.name": "David", "candidate.city": "Gómez Palacio",
              "candidate.age": "29"}
     q = next_question_from_missing_facts(facts)
-    assert "Le comento, actualmente tenemos vacantes para operador de tracto full y de sencillo" in q
+    assert "Le comento, actualmente tenemos vacantes para operador sencillo y para tracto full" in q
     assert "¿En cuál tiene experiencia?" in q
-    # No repite "full o sencillo" dos veces
+    # No repite "full" dos veces
     assert q.count("full") == 1
     assert "Las vacantes disponibles son para" not in q
 

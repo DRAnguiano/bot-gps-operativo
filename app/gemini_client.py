@@ -1,10 +1,9 @@
-"""Cliente Gemini 2.5 Flash — adapter multi-proveedor (gemini-natural-recruiter D1/D2).
+"""Cliente Gemini 2.5 Flash — proveedor LLM único.
 
 REST vía httpx (sin dependencia nueva). thinkingBudget=0 SIEMPRE en llamadas JSON
 (hallazgo del eval 2026-07-07: el thinking por default consume maxOutputTokens y
-trunca el JSON). Cutover por FUNCIÓN vía env (`LLM_*_PROVIDER`), con fallback
-automático a Groq si Gemini falla/agota cuota — cada corte es independiente y
-reversible. Ver openspec/changes/gemini-natural-recruiter/design.md.
+trunca el JSON). Default: Flash para dar más margen de RPM en pruebas y
+staging; `GEMINI_MODEL` permite override explícito.
 """
 from __future__ import annotations
 
@@ -25,11 +24,17 @@ class GeminiError(RuntimeError):
     """Fallo de la llamada a Gemini (HTTP, timeout, o respuesta sin contenido)."""
 
 
-def _api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
+def _api_keys() -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    primary = os.environ.get("GEMINI_API_KEY")
+    backup = os.environ.get("GEMINI_API_KEY_BACKUP")
+    if primary:
+        keys.append(("primary", primary))
+    if backup and backup != primary:
+        keys.append(("backup", backup))
+    if not keys:
         raise GeminiError("missing_gemini_api_key")
-    return key
+    return keys
 
 
 def _timeout() -> httpx.Timeout:
@@ -39,20 +44,33 @@ def _timeout() -> httpx.Timeout:
 
 def _post(body: dict, *, model: str | None = None) -> str:
     url = f"{_API_BASE}/{model or _DEFAULT_MODEL}:generateContent"
-    try:
-        r = httpx.post(url, params={"key": _api_key()}, json=body, timeout=_timeout())
-    except httpx.TimeoutException as exc:
-        raise GeminiError(f"timeout: {exc}") from exc
-    except httpx.HTTPError as exc:
-        raise GeminiError(f"http_error: {exc}") from exc
-    if r.status_code == 429:
-        raise GeminiError("rate_limited")
-    if r.status_code != 200:
-        raise GeminiError(f"http_{r.status_code}: {r.text[:200]}")
-    try:
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as exc:
-        raise GeminiError(f"empty_response: {exc}") from exc
+    last_exc: GeminiError | None = None
+    for idx, (label, key) in enumerate(_api_keys()):
+        try:
+            r = httpx.post(url, params={"key": key}, json=body, timeout=_timeout())
+        except httpx.TimeoutException as exc:
+            last_exc = GeminiError(f"timeout: {exc}")
+        except httpx.HTTPError as exc:
+            last_exc = GeminiError(f"http_error: {exc}")
+        else:
+            if r.status_code == 429:
+                last_exc = GeminiError("rate_limited")
+            elif r.status_code != 200:
+                last_exc = GeminiError(f"http_{r.status_code}: {r.text[:200]}")
+            else:
+                try:
+                    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError) as exc:
+                    last_exc = GeminiError(f"empty_response: {exc}")
+                else:
+                    last_exc = None
+
+        if last_exc is not None and idx + 1 < len(_api_keys()):
+            print(f"[gemini_fallback] {label} falló, usando backup", flush=True)
+            continue
+        if last_exc is not None:
+            raise last_exc
+    raise GeminiError("missing_gemini_api_key")
 
 
 def generate_text(
@@ -152,13 +170,11 @@ def dispatch_generation(system: str, user: str, *, temperature: float | None = N
     return generate_text(user, system=system, temperature=temperature or 0.0, max_tokens=max_tokens)
 
 
-def dispatch_json(prompt: str, system_message: str, *, temperature: float = 0.0,
-                   model: str | None = None) -> str:
-    """Extracción/clasificación JSON. Drop-in de call_groq_json: mismo orden
-    posicional (prompt, system) y mismo contrato de retorno — string JSON crudo;
-    ante fallo devuelve '{"error": ...}' (los callers ya lo manejan como señales
-    neutras / extracción vacía). ``model`` era la selección de modelo Groq; se
-    acepta y se ignora (compatibilidad de firma durante la migración)."""
+def dispatch_json(prompt: str, system_message: str, *, temperature: float = 0.0) -> str:
+    """Extracción/clasificación JSON (orden posicional prompt, system — herencia del
+    contrato anterior). Devuelve el string JSON crudo; ante fallo devuelve
+    '{"error": ...}' (los callers lo manejan como señales neutras / extracción
+    vacía). El modelo es único y vive en GEMINI_MODEL."""
     try:
         return generate_json(prompt, system=system_message, temperature=temperature)
     except GeminiError as exc:
@@ -167,7 +183,7 @@ def dispatch_json(prompt: str, system_message: str, *, temperature: float = 0.0,
 
 
 def dispatch_vision(image_bytes: bytes, prompt: str, *, mime_type: str = "image/jpeg",
-                     json_mode: bool = False, groq_fallback_kwargs: dict | None = None) -> str:
+                     json_mode: bool = False) -> str:
     """Visión de documentos. Ante fallo devuelve '' (mismo contrato que la visión
     anterior: string vacío → media guard acotado, sin encolar)."""
     try:

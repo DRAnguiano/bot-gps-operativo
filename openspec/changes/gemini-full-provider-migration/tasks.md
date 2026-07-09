@@ -1,7 +1,8 @@
 > Orden: dispatch Gemini-único primero (base de todo), luego migración por módulo
 > (señales → copy → extractor con gate), audio, finalidad conversacional, y el
 > retiro FÍSICO de Groq al final (D7: solo tras verificar todos los caminos en
-> vivo). Suite por bloque; cadencia 30-40s en pruebas vivas (5 RPM free tier).
+> vivo). Suite por bloque; Gemini 2.5 Flash como default; cadencia 3 RPM
+> (20s) en pruebas vivas.
 
 ## 1. Base: dispatch Gemini-único + config propia
 
@@ -9,7 +10,8 @@
       `dispatch_vision`/`dispatch_audio`(nuevo) SIN imports ni llamadas a Groq;
       degradación por contrato de error (D1: json-error / "" / excepción al caller).
       Config propia `GEMINI_MODEL`/`GEMINI_MAX_TOKENS`/`GEMINI_TEMPERATURE` (D2);
-      thinkingBudget=0 en texto y JSON. Tests con mocks (sin red).
+      thinkingBudget=0 en texto y JSON. Tests con mocks (sin red). Ajuste 2026-07-08:
+      default `GEMINI_MODEL=gemini-2.5-flash` y harness QA a 3 RPM (20s).
 - [x] 1.2 `call_gemini_llm` (indexer): usa config GEMINI_*, captura GeminiError →
       mensaje de disculpa estándar (contrato del caller); `call_llm` enruta siempre
       a Gemini. Tests.
@@ -26,6 +28,11 @@
       a ERROR trazable hasta el repunte en 4.2). Suites.
 - [ ] 2.3 Smoke vivo (cadencia): un turno real por Telegram → extracción y señales
       correctas vía Gemini, `[gemini_json]` sin errores en logs.
+      Avance 2026-07-08: logs vivos revisados en conv 167/168. Texto llegó al
+      pipeline y audio entró a `[CHATWOOT_AUDIO_TRANSCRIBE]`; los fallos observados
+      fueron `rate_limited` y el contenedor aún usaba `gemini-2.5-flash`. Imagen
+      viva reconstruida y verificada con `gemini-2.5-flash`; smoke post-rebuild
+      pendiente de nuevo turno real.
 
 ## 3. Migración de call sites — generación de copy
 
@@ -37,12 +44,20 @@
 ## 4. Migración del extractor (gate de calidad — absorbe G3)
 
 - [x] 4.1 `turn_extractor:233` y `profile_extractor` (6 sitios) → dispatch_json.
-- [ ] 4.2 Repuntar `scripts/qa_response_matrix.py` al extractor unificado (el
+- [x] 4.2 Repuntar `scripts/qa_response_matrix.py` al extractor unificado (el
       harness usaba el classifier retirado) y correr la matriz de 72 casos contra
       Gemini: gate igualar/superar benchmark previo (recall 0.84 / precisión 1.00).
       Adaptar few-shots del prompt si hace falta (fallos conocidos del eval: fulero
       crudo, caja seca). NO avanzar sin pasar.
-- [ ] 4.3 Retirar el parámetro `model=` de las firmas migradas (era selección de
+      Avance 2026-07-08: harness repuntado al extractor unificado
+      (`extract_turn` + `validate_extraction`), shadow ERROR ya propaga al resumen;
+      tests del harness verdes. Smoke Gemini 1/1 PASS y corrida prioridad Alta
+      13/13 PASS antes de reforzar propagación; gate completo queda pendiente por
+      cuota diaria Gemini. Reintento con Gemini 2.5 Flash + 3 RPM + cooldown + api/worker/
+      beat detenidos siguió devolviendo 429 desde la primera fila; bloqueo externo
+      de cuota/proyecto, no fallo semántico del extractor. 72/72 PASS_STRONG
+      con Gemini 2.5 Flash, backup key y cadencia 3 RPM.
+- [x] 4.3 Retirar el parámetro `model=` de las firmas migradas (era selección de
       modelo Groq).
 
 ## 5. Audio nativo (absorbe G2)

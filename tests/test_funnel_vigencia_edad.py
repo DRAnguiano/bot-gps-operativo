@@ -14,7 +14,7 @@ from app.lead_memory.profile_extractor import extract_profile_facts_as_dict as f
 from app.chatwoot_note_sync import calculate_candidate_labels, render_candidate_note
 from app.settings import AGE_DISQUALIFICATION_LIMIT
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 
 def _ctx(f):
@@ -111,6 +111,7 @@ def test_age_under_limit_continues():
     assert "tracto full" in q.lower()
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — profile_extractor usa LLM T=0")
 def test_expiration_extraction_relative_and_date():
     d = facts("mi licencia vence el 31 de diciembre de 2027")
@@ -182,6 +183,7 @@ def test_todo_bien_no_confirma_vigencia():
     assert "medical.apto_status" not in d
 
 
+@pytest.mark.external_llm
 def test_en_regla_con_licencia_y_fecha_si_confirma():
     # Con dato específico de vigencia el registro SÍ debe ocurrir
     d = facts("licencia tipo E vigente, vence en 1 año")
@@ -215,11 +217,13 @@ def test_sin_cartas_persiste_ninguno_para_ofrecer_alternativa():
 
 # ── Task 1.3: tramite_comprobante ─────────────────────────────────────────────
 
+@pytest.mark.external_llm
 def test_licencia_vencida_con_comprobante_marca_tramite():
     d = facts("mi licencia está vencida pero tengo comprobante de cita")
     assert d.get("license.tramite_comprobante") == "true", f"got: {d}"
 
 
+@pytest.mark.external_llm
 def test_apto_vencido_con_cita_marca_tramite():
     d = facts("el apto está vencido ya pagué la cita")
     assert d.get("medical.tramite_comprobante") == "true", f"got: {d}"
@@ -309,6 +313,77 @@ def test_funnel_documento_foraneo_exige_cartas_membretadas():
     q = next_question_from_missing_facts(f)
     assert "membretada" in q.lower(), f"foráneo debe pedir membretadas, got: {q!r}"
     assert "imss" not in q.lower(), f"foráneo no debe mencionar IMSS, got: {q!r}"
+
+
+def test_vehicle_question_with_license_b_targets_sencillo():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "license.category": "B",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "licencia tipo b" in q.lower()
+    assert "sencillo" in q.lower()
+    assert "full" not in q.lower()
+
+
+def test_vehicle_question_with_license_e_mentions_sencillo_and_full():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "license.category": "E",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "licencia tipo e" in q.lower()
+    assert "sencillo" in q.lower()
+    assert "full" in q.lower()
+
+
+def test_license_question_for_full_requires_e():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "experience.vehicle_type": "full",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "tipo e" in q.lower()
+    assert "cuándo vence" in q.lower()
+
+
+def test_license_question_for_sencillo_accepts_b_or_e():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "experience.vehicle_type": "sencillo",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "tipo b o e" in q.lower()
+    assert "cuándo vence" in q.lower()
+
+
+def test_document_requirement_note_local():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({"candidate.city": "Torreón"})
+    assert "imss" in note.lower()
+    assert "foraneo" not in note.lower()
+
+
+def test_document_requirement_note_foraneo():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({"candidate.city": "Monterrey"})
+    assert "membretada" in note.lower()
+    assert "imss" not in note.lower()
+
+
+def test_document_requirement_note_unknown_residency_is_conditional():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({})
+    assert "si es local" in note.lower()
+    assert "si es foráneo" in note.lower()
 
 
 # ── Task 2.3: no re-saludar ni re-preguntar dato ya confirmado ────────────────

@@ -6,8 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-# scripts/ is not a package inside the Docker image — add it to path directly
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# scripts/ is not a package inside the Docker image — add it to path directly.
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import qa_response_matrix as harness  # noqa: E402
 from qa_response_matrix import (
@@ -15,6 +17,7 @@ from qa_response_matrix import (
     SHADOW_COLUMNS,
     _SHADOW_EMPTY,
     _make_row_fn,
+    _shadow_context_text,
     _run_business_shadow,
     run_dry,
 )
@@ -26,20 +29,32 @@ SHADOW_MOCK_PATH = "qa_response_matrix.classify_business_route_shadow"
 
 
 class TestRunBusinessShadow:
-    def test_import_error_returns_error_fields(self):
-        with patch.dict("sys.modules", {"app.knowledge.business_route_classifier": None}):
+    def test_unified_extractor_output_fields_present(self):
+        from app.knowledge.turn_extractor import FieldValue, TurnExtraction
+
+        extraction = TurnExtraction(
+            fields={"experience.vehicle_type": FieldValue("sencillo", explicit_marker=True)}
+        )
+        facts = [{
+            "fact_group": "experience",
+            "fact_key": "vehicle_type",
+            "fact_value": "sencillo",
+            "confidence": 1.0,
+        }]
+
+        with patch("app.knowledge.turn_extractor.extract_turn", return_value=extraction), \
+             patch("app.knowledge.turn_extractor.validate_extraction", return_value=facts):
+            result = _run_business_shadow("manejo sencillo", conv_cls=None)
+
+        assert result["business_shadow_status"] == "OK"
+        assert result["business_signal_names"] == "objetivo_full_sencillo"
+        assert result["business_fact_keys"] == "experience.vehicle_type"
+
+    def test_unified_extractor_exception_returns_error_fields(self):
+        with patch("app.knowledge.turn_extractor.extract_turn", side_effect=RuntimeError("unexpected")):
             result = _run_business_shadow("hola")
         assert result["business_shadow_status"] == "ERROR"
-        assert "import_error" in result["business_shadow_error"]
-
-    def test_module_retired_degrades_to_error_row(self):
-        # business_route_classifier fue RETIRADO (gemini-full-provider-migration,
-        # 2026-07-07: código huérfano; el entendimiento del turno vive en el
-        # extractor unificado). El harness degrada a fila ERROR trazable sin
-        # crashear, hasta que se repunte al extractor (gate 4.2).
-        result = _run_business_shadow("manejo sencillo")
-        assert result["business_shadow_status"] == "ERROR"
-        assert "import_error" in result["business_shadow_error"]
+        assert "RuntimeError" in result["business_shadow_error"]
 
     def test_valid_output_fields_present(self):
         from app.knowledge.business_route_schema import (
@@ -80,6 +95,17 @@ class TestRunBusinessShadow:
         assert result["business_shadow_status"] == "ERROR"
         assert "RuntimeError" in result["business_shadow_error"]
 
+    def test_llm_unavailable_reraises_for_retry(self):
+        class LLMUnavailableError(RuntimeError):
+            pass
+
+        with patch(
+            "qa_response_matrix.classify_business_route_shadow",
+            side_effect=LLMUnavailableError("Gemini no disponible: gemini_error"),
+        ):
+            with pytest.raises(LLMUnavailableError):
+                _run_business_shadow("hola")
+
     def test_multiple_signals_pipe_separated(self):
         from app.knowledge.business_route_schema import BusinessRouteOutput, BusinessSignal
 
@@ -103,6 +129,19 @@ class TestRunBusinessShadow:
 # ── _make_row_fn ──────────────────────────────────────────────────────────────
 
 class TestMakeRowFn:
+    def test_shadow_context_text_includes_question_topic_and_history(self):
+        text = _shadow_context_text(
+            {
+                "candidate_question": "Hola, me interesa",
+                "topic": "vacante/info_general",
+                "agent_answer_historica": "Gracias por tu interés",
+            }
+        )
+
+        assert "Hola, me interesa" in text
+        assert "vacante/info_general" in text
+        assert "Gracias por tu interés" in text
+
     def test_shadow_disabled_returns_base_fn_unchanged(self):
         base_fn_called = []
 
@@ -136,6 +175,57 @@ class TestMakeRowFn:
         assert "business_signal_names" in result
         assert "profile_context_available" in result
 
+    def test_shadow_enabled_evaluates_expected_route(self):
+        from app.knowledge.business_route_schema import BusinessRouteOutput, BusinessSignal
+
+        def base_fn(row):
+            return {
+                "actual_primary_intent": "",
+                "actual_secondary_intents": "[]",
+                "pass_forbidden_phrases": True,
+                "status": "PASS",
+                "mapping_status": "PASS",
+            }
+
+        mock_out = BusinessRouteOutput()
+        mock_out.business_signals.append(BusinessSignal(name="pago_condiciones", evidence="pago"))
+
+        with patch("qa_response_matrix.classify_business_route_shadow", return_value=mock_out):
+            combined = _make_row_fn(base_fn, include_shadow=True)
+            result = combined({
+                "candidate_question": "cuanto pagan",
+                "route_esperada_sugerida": "pago_condiciones",
+            })
+
+        assert result["mapping_status"] == "PASS_STRONG"
+        assert result["match_source"] == "business_shadow"
+        assert result["actual_business_route"] == "pago_condiciones"
+
+    def test_shadow_enabled_reviews_unmatched_route(self):
+        from app.knowledge.business_route_schema import BusinessRouteOutput, BusinessSignal
+
+        def base_fn(row):
+            return {
+                "actual_primary_intent": "",
+                "actual_secondary_intents": "[]",
+                "pass_forbidden_phrases": True,
+                "status": "PASS",
+                "mapping_status": "PASS",
+            }
+
+        mock_out = BusinessRouteOutput()
+        mock_out.business_signals.append(BusinessSignal(name="pago_condiciones", evidence="pago"))
+
+        with patch("qa_response_matrix.classify_business_route_shadow", return_value=mock_out):
+            combined = _make_row_fn(base_fn, include_shadow=True)
+            result = combined({
+                "candidate_question": "cuanto pagan",
+                "route_esperada_sugerida": "documentos_requisitos",
+            })
+
+        assert result["mapping_status"] == "REVIEW_MAPPING"
+        assert result["status"] == "REVIEW"
+
     def test_shadow_never_raises(self):
         def base_fn(row):
             return {"actual_primary_intent": "pay_question", "actual_secondary_intents": "[]"}
@@ -148,6 +238,8 @@ class TestMakeRowFn:
             result = combined({"candidate_question": "test"})
 
         assert result["business_shadow_status"] == "ERROR"
+        assert result["status"] == "ERROR"
+        assert result["mapping_status"] == "ERROR"
 
     def test_conv_cls_passed_from_intent_result(self):
         """Verifica que conv_cls se construye desde el resultado del classify."""

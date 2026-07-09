@@ -182,7 +182,7 @@ def test_note_ilegible_asks_retoma():
 # ── acuse determinista (fallback sin LLM) ─────────────────────────────────────
 
 def test_build_acuse_fallback_names_received_and_missing():
-    with mock.patch("app.indexer.call_groq_with_system", side_effect=RuntimeError("sin LLM")):
+    with mock.patch("app.gemini_client.dispatch_generation", side_effect=RuntimeError("sin LLM")):
         facts = {"expediente.ine.status": "recibido"}
         acuse = EXP.build_acuse(facts, ["ine"], [])
     assert "INE" in acuse and "✓" in acuse
@@ -190,7 +190,7 @@ def test_build_acuse_fallback_names_received_and_missing():
 
 
 def test_build_acuse_ilegible_pide_retoma():
-    with mock.patch("app.indexer.call_groq_with_system", side_effect=RuntimeError("sin LLM")):
+    with mock.patch("app.gemini_client.dispatch_generation", side_effect=RuntimeError("sin LLM")):
         acuse = EXP.build_acuse({"expediente.apto_medico.status": "ilegible"}, [], ["apto_medico"])
     assert "no se alcanza a leer" in acuse
     assert "foto" in acuse.lower()

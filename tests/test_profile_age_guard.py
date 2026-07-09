@@ -3,10 +3,18 @@
 `candidate.age` solo se captura con señal explícita de edad. Frases de experiencia
 ("20 años de fullero", "10 años manejando full", "20 años de experiencia", etc.) NO
 deben producir `candidate.age`.
+
+extract_profile_facts_as_dict llama al LLM real (sin mock) — marcado external_llm
+(gemini-full-provider-migration: Gemini free tier es 20 RPD, no soporta estos tests
+en el gate rápido por defecto como sí lo hacía el free tier generoso de Groq).
 """
 from __future__ import annotations
 
+import pytest
+
 from app.lead_memory.profile_extractor import extract_profile_facts_as_dict as f
+
+pytestmark = pytest.mark.external_llm
 
 
 # --- Frases de experiencia → NO edad ---

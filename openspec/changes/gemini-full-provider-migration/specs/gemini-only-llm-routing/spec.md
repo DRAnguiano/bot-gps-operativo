@@ -2,7 +2,7 @@
 
 ### Requirement: Gemini como único proveedor LLM
 El sistema SHALL enrutar toda llamada LLM (generación, JSON/extracción/clasificación,
-visión, audio) exclusivamente por Gemini 2.5 Flash vía los dispatch de
+visión, audio) exclusivamente por Gemini vía los dispatch de
 `gemini_client`. Ningún módulo SHALL importar ni invocar funciones de Groq (ni como
 camino primario, ni como fallback, ni como override); la config SHALL ser propia de
 Gemini (`GEMINI_MODEL`, `GEMINI_MAX_TOKENS`, `GEMINI_TEMPERATURE`,

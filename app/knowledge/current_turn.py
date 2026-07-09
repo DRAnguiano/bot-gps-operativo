@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import random
 import re
@@ -74,6 +75,53 @@ def residency_document_question(facts: dict[str, Any]) -> str:
     if is_local:
         return "¿Cuenta con cartas laborales o semanas cotizadas del IMSS?"
     return "¿Cuenta con 2 cartas laborales membretadas de sus empleos anteriores?"
+
+
+def residency_document_requirement_note(facts: dict[str, Any]) -> str:
+    """Explicación breve del requisito documental alineada al estado del funnel.
+
+    Cuando la residencia ya es conocida, devuelve solo la política aplicable a ese
+    candidato. Si aún no se conoce, devuelve una explicación condicional que no se
+    contradice con ninguna de las dos ramas.
+    """
+    has_signal = facts.get("location.is_local_laguna") in {"true", "false"} or bool(facts.get("candidate.city"))
+    if has_signal:
+        if residency_is_local(facts):
+            return "Si es local de la ZM Laguna, aceptamos cartas laborales membretadas o semanas cotizadas del IMSS."
+        return "Para candidatos foráneos necesitamos 2 cartas laborales membretadas."
+    return (
+        "Si es local de la ZM Laguna, aceptamos cartas laborales membretadas o semanas cotizadas del IMSS; "
+        "si es foráneo, necesitamos 2 cartas laborales membretadas."
+    )
+
+
+def vehicle_vacancy_question(facts: dict[str, Any]) -> str:
+    """Pregunta de unidad/vacante condicionada por la licencia conocida."""
+    cat = (facts.get("license.category") or "").upper()
+    if cat == "B":
+        return (
+            "Con licencia tipo B revisamos vacantes de operador sencillo. "
+            "¿Tiene experiencia en sencillo?"
+        )
+    if cat == "E":
+        return (
+            "Con licencia tipo E podemos revisar vacantes de sencillo o de full "
+            "(doble articulado). ¿En cuál tiene experiencia?"
+        )
+    return (
+        "Le comento, actualmente tenemos vacantes para operador sencillo y para tracto "
+        "full (doble articulado). ¿En cuál tiene experiencia?"
+    )
+
+
+def license_requirement_question(facts: dict[str, Any]) -> str:
+    """Pregunta de licencia condicionada por el tipo de unidad ya conocido."""
+    vehicle = normalize_text(str(facts.get("experience.vehicle_type") or ""))
+    if vehicle == "full":
+        return "Para vacante de full necesitamos licencia federal tipo E. ¿Cuenta con licencia tipo E y cuándo vence?"
+    if vehicle == "sencillo":
+        return "Para vacante de sencillo puede aplicar con licencia federal tipo B o E. ¿Qué tipo de licencia tiene y cuándo vence?"
+    return "¿Qué tipo de licencia federal tiene y cuándo vence?"
 
 from app.settings import AGE_DISQUALIFICATION_LIMIT as AGE_LIMIT_EXCLUSIVE
 RENEWAL_PROOF_QUESTION = (
@@ -363,7 +411,13 @@ def _extract_context_confirmation_facts(norm_message: str, last_bot_message: str
     # La negación bloquea cualquier confirmación (incluye "si no, ...").
     is_yes = (strong_yes or soft_yes) and not has_negation
     _asks_renewal = bool(_TOPIC_RENEWAL_PROOF.search(last_bot_message))
-    if not is_yes:
+    _is_summary_prompt = bool(_TOPIC_SUMMARY_CONFIRM.search(last_bot_message))
+    _summary_yes = _is_summary_prompt and not has_negation and (
+        is_yes or _is_summary_affirmation(t) or _llm_summary_affirmation(t)
+    )
+    if _is_summary_prompt:
+        return {"funnel.summary_confirmed": "true"} if _summary_yes else {}
+    if not is_yes and not _summary_yes:
         # Negación corta a la pregunta de comprobante de renovación → "no".
         # (El resto de campos no se infiere desde una negación corta.)
         if _asks_renewal and has_negation:
@@ -381,8 +435,6 @@ def _extract_context_confirmation_facts(norm_message: str, last_bot_message: str
         facts["documents.renewal_proof"] = "si"
     # Resumen de confirmación (gemini-natural-recruiter D6): "sí/correcto" al
     # "¿Es correcto?" confirma los datos registrados y habilita el cierre.
-    if _TOPIC_SUMMARY_CONFIRM.search(last_bot_message):
-        facts["funnel.summary_confirmed"] = "true"
     return facts
 
 
@@ -609,22 +661,9 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
     if is_age_disqualified(facts):
         return age_disqualification_reply(_to_int(facts.get("candidate.age")))
     if not facts.get("experience.vehicle_type"):
-        # 2.4: condición por licencia si ya se conoce (B→sencillo, E→ambas)
-        cat = (facts.get("license.category") or "").upper()
-        if cat == "B":
-            return (
-                "Con licencia tipo B la vacante disponible es de sencillo. "
-                "¿Le interesa una vacante de operador sencillo?"
-            )
-        elif cat == "E":
-            return "¿Le interesa una vacante de tracto full o de sencillo?"
-        else:
-            return (
-                "Le comento, actualmente tenemos vacantes para operador de tracto "
-                "full y de sencillo. ¿En cuál tiene experiencia?"
-            )
+        return vehicle_vacancy_question(facts)
     if not facts.get("license.category"):
-        return "¿Qué tipo de licencia federal tiene y cuándo vence?"
+        return license_requirement_question(facts)
     if not is_valid_expiration_text(facts.get("license.expiration_text")):
         return "¿En cuánto tiempo se le vence su licencia federal?"
     renewal_question = _renewal_question_for_short_expiry(facts)
@@ -647,6 +686,13 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
 # confirmación contextual contra este texto en el último mensaje del bot.
 _TOPIC_SUMMARY_CONFIRM = re.compile(r"es correcto", re.IGNORECASE)
 
+_SUMMARY_AFFIRMATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^asi(?:\s+mero)?(?:\s+es)?$"),
+    re.compile(r"^esta\s+bien$"),
+    re.compile(r"^todo\s+(?:bien|correcto)$"),
+    re.compile(r"^correctisimo$"),
+)
+
 _SUMMARY_FIELD_DISPLAY: tuple[tuple[str, str], ...] = (
     ("candidate.name", "Nombre"),
     ("candidate.city", "Ciudad"),
@@ -662,6 +708,45 @@ _SUMMARY_FIELD_DISPLAY: tuple[tuple[str, str], ...] = (
 
 def summary_confirmed(facts: dict[str, Any]) -> bool:
     return facts.get("funnel.summary_confirmed") == "true"
+
+
+def _is_summary_affirmation(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(pat.match(t) for pat in _SUMMARY_AFFIRMATIVE_PATTERNS)
+
+
+def _llm_summary_affirmation(text: str) -> bool:
+    t = normalize_text(text or "")
+    if not t:
+        return False
+    tokens = t.split()
+    if len(tokens) > 5:
+        return False
+
+    from app.gemini_client import dispatch_json
+
+    system = (
+        "Clasifica si la respuesta corta del candidato confirma afirmativamente un resumen "
+        "de datos que el bot acaba de preguntar con '¿Es correcto?'. "
+        "Responde SOLO JSON valido con esta forma exacta: "
+        '{"affirmative": true|false}.'
+    )
+    prompt = (
+        "Marca affirmative=true solo si la frase equivale claramente a "
+        "'sí, mis datos están correctos'. "
+        "Marca false si niega, corrige un dato, expresa duda o no confirma.\n"
+        'Ejemplos true: "por su pollo", "of course", "clarines", "todo en orden".\n'
+        'Ejemplos false: "no", "la ciudad esta mal", "mas o menos", "creo que si".\n'
+        f'Respuesta del candidato: "{t}"'
+    )
+    try:
+        raw = dispatch_json(prompt, system, temperature=0.0)
+        data = json.loads(raw or "{}")
+    except Exception:
+        return False
+    return data.get("affirmative") is True
 
 
 def build_funnel_summary(facts: dict[str, Any]) -> str:

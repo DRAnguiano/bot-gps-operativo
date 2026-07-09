@@ -530,29 +530,77 @@ def _chatwoot_has_media(payload: dict) -> bool:
     return False
 
 
-def _detect_audio_url(payload: dict) -> str | None:
-    """Devuelve la data_url del primer adjunto de tipo audio, o None si no hay audio.
+_AUDIO_EXT_TO_MIME = {
+    ".mp3": "audio/mpeg",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".webm": "audio/webm",
+    ".amr": "audio/amr",
+}
 
-    Chatwoot expone file_type=="audio" para notas de voz de WhatsApp.
-    Revisa tanto la ruta top-level como la ruta anidada en message.attachments.
+
+def _attachment_url_ext(url: str) -> str:
+    path = (url or "").lower().split("?", 1)[0].rsplit("/", 1)[-1]
+    if "." not in path:
+        return ""
+    return "." + path.rsplit(".", 1)[-1]
+
+
+def _attachment_content_type(a: dict) -> str:
+    return str(
+        a.get("content_type")
+        or a.get("contentType")
+        or a.get("file_content_type")
+        or a.get("mime_type")
+        or a.get("mimeType")
+        or ""
+    ).lower()
+
+
+def _detect_audio_attachment(payload: dict) -> tuple[str | None, str | None]:
+    """Devuelve (url, mime_type) del primer audio, o (None, None).
+
+    Chatwoot normalmente expone file_type=="audio", pero según canal/conector puede
+    llegar como voice/recording o como file con content_type/URL de audio.
+    Revisa tanto la ruta top-level como message.attachments.
     """
-    def _find_audio(items) -> str | None:
+    def _find_audio(items) -> tuple[str | None, str | None]:
         if not isinstance(items, list):
-            return None
+            return None, None
         for a in items:
-            if isinstance(a, dict) and a.get("file_type") == "audio":
-                url = a.get("data_url") or a.get("thumb_url")
-                if url:
-                    return url
-        return None
+            if not isinstance(a, dict):
+                continue
+            ft = str(a.get("file_type") or a.get("fileType") or "").lower()
+            url = a.get("data_url") or a.get("download_url") or a.get("file_url") or a.get("thumb_url") or ""
+            ctype = _attachment_content_type(a)
+            ext = _attachment_url_ext(url)
+            is_audio = (
+                ft in {"audio", "voice", "voice_message", "recording"}
+                or ctype.startswith("audio/")
+                or ext in _AUDIO_EXT_TO_MIME
+            )
+            if is_audio and url:
+                return url, ctype if ctype.startswith("audio/") else _AUDIO_EXT_TO_MIME.get(ext)
+        return None, None
 
     result = _find_audio(payload.get("attachments"))
-    if result:
+    if result[0]:
         return result
     message = payload.get("message")
     if isinstance(message, dict):
         return _find_audio(message.get("attachments"))
-    return None
+    return None, None
+
+
+def _detect_audio_url(payload: dict) -> str | None:
+    """Devuelve la URL del primer adjunto de audio, o None si no hay audio."""
+    return _detect_audio_attachment(payload)[0]
 
 
 def _detect_visual_attachment(payload: dict) -> tuple[str | None, str]:
@@ -1148,7 +1196,7 @@ async def chatwoot_webhook(
         if not account_id or not conversation_id:
             return {"status": "ignored", "reason": "media_without_ids"}
 
-        # ── Rama audio: descargar + transcribir con Groq Whisper ──
+        # ── Rama audio: descargar + transcribir con Gemini nativo ──
         if _audio_url:
             transcribed_text = ""
             transcribe_error = None
@@ -1162,15 +1210,10 @@ async def chatwoot_webhook(
                 # Gemini audio nativo (gemini-full-provider-migration B5): transcribe
                 # con el glosario trailero en el prompt — cierra el bug de Whisper
                 # "fulero"→"futbol" (conv 163). mime_type desde la extensión.
-                _aname = _audio_url.split("?")[0].split("/")[-1].lower()
-                if _aname.endswith((".mp3",)):
-                    _amime = "audio/mp3"
-                elif _aname.endswith((".wav",)):
-                    _amime = "audio/wav"
-                elif _aname.endswith((".m4a", ".aac")):
-                    _amime = "audio/aac"
-                else:  # .ogg / .oga (Telegram/WhatsApp) y default
-                    _amime = "audio/ogg"
+                _audio_url2, _detected_mime = _detect_audio_attachment(payload)
+                _aname = (_audio_url2 or _audio_url).split("?")[0].split("/")[-1].lower()
+                _ext = "." + _aname.rsplit(".", 1)[-1] if "." in _aname else ""
+                _amime = _detected_mime or _AUDIO_EXT_TO_MIME.get(_ext) or "audio/ogg"
                 from app.gemini_client import dispatch_audio
                 transcribed_text = await asyncio.to_thread(
                     dispatch_audio, audio_bytes, mime_type=_amime
@@ -1255,7 +1298,6 @@ async def chatwoot_webhook(
                         image_bytes,
                         _vision_prompt,
                         mime_type=mime_type,
-                        groq_fallback_kwargs={"is_sticker": (att_kind == "sticker")},
                     )
                 except Exception as exc:
                     vision_error = str(exc)

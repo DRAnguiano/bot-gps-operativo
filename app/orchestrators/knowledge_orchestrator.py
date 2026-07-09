@@ -1070,9 +1070,14 @@ Tu acuse empático (3 oraciones, sin pregunta final):
     return reply
 
 
-def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any]:
+def _answer_rag_message(
+    message: str,
+    contract: dict[str, Any],
+    facts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     rag_enabled = _env_bool("KNOWLEDGE_RAG_GENERATION_ENABLED", True)
+    from app.knowledge.intent_orchestrator import _residency_prompt_note
 
     context = retrieve_preferred_context(message, preferred_sources=contract.get("preferred_sources") or [])
 
@@ -1092,6 +1097,7 @@ def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any
         message=message,
         knowledge_contract=contract,
         context_text=context.get("context_text") or "",
+        residency_note=_residency_prompt_note(facts),
     )
 
     if not rag_enabled:
@@ -1467,11 +1473,16 @@ _REENCAUCE_FIELD_DESC = {
 _REENCAUCE_ALT = {
     "license.expiration_text": "Si está vencida o en trámite, también aceptamos el comprobante de pago de la renovación.",
     "medical.apto_expiration_text": "Si está vencido o en trámite, también aceptamos el comprobante de pago de la renovación.",
-    "documents.labor_letters_status": "Aceptamos cartas laborales membretadas o el documento de semanas cotizadas del IMSS; con cualquiera de los dos basta.",
 }
 
 
-def _build_natural_reencauce(field: str, message: str, reason: str, final: bool = False) -> str | None:
+def _build_natural_reencauce(
+    field: str,
+    message: str,
+    reason: str,
+    final: bool = False,
+    facts: dict[str, Any] | None = None,
+) -> str | None:
     """Respuesta natural (persona Mundo) cuando el candidato responde a un campo del
     funnel con una negativa, algo irrelevante o absurdo. Acusa con tacto, ofrece la
     alternativa CONOCIDA si aplica (sin inventar política) y re-encauza al dato pendiente.
@@ -1481,6 +1492,9 @@ def _build_natural_reencauce(field: str, message: str, reason: str, final: bool 
     volver a preguntar, indicando que retomamos en cuanto tenga el dato/documento."""
     desc = _REENCAUCE_FIELD_DESC.get(field, "el dato que le pedí")
     alt = _REENCAUCE_ALT.get(field, "")
+    if field == "documents.labor_letters_status":
+        from app.knowledge.current_turn import residency_document_requirement_note
+        alt = residency_document_requirement_note(facts or {})
     situacion = (
         "el candidato dice que no lo tiene o lo niega"
         if reason == "negation"
@@ -1724,7 +1738,11 @@ def _build_funnel_nudge(
     except (ValueError, ImportError):
         pass
 
-    from app.knowledge.current_turn import residency_document_question
+    from app.knowledge.current_turn import (
+        license_requirement_question,
+        residency_document_question,
+        vehicle_vacancy_question,
+    )
 
     # Leer último mensaje del bot (necesario para BUG-2 y BUG-3)
     _last_bot = ""
@@ -1782,18 +1800,15 @@ def _build_funnel_nudge(
             continue
         # 2.4: vehicle_type conditioned on license category if already known
         if step["keys"] == {"experience.vehicle_type"}:
-            cat = (active_facts.get("license.category") or "").upper()
-            if cat == "B":
-                return (
-                    "Con licencia tipo B la vacante disponible es de sencillo. "
-                    "¿Le interesa una vacante de operador sencillo?",
-                    _canonical_asked_keys(step["keys"]),
-                )
-            elif cat == "E":
-                return (
-                    "¿Le interesa una vacante de tracto full o de sencillo?",
-                    _canonical_asked_keys(step["keys"]),
-                )
+            return (
+                vehicle_vacancy_question(active_facts),
+                _canonical_asked_keys(step["keys"]),
+            )
+        if step["keys"] == {"license.category"}:
+            return (
+                license_requirement_question(active_facts),
+                _canonical_asked_keys(step["keys"]),
+            )
         # 2.5 / P0-2: document question by residency; skip if candidate already answered
         if step["keys"] == {"documents.labor_letters_status"}:
             _proof = active_facts.get("documents.proof")
@@ -2046,7 +2061,15 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
         friendly_result = {"reply": _generate_joke_reply(fallback=CONTROLLED_FALLBACK_REPLY)}
         reply = friendly_result["reply"]
     elif contract.get("requires_rag"):
-        rag_result = _answer_rag_message(message, contract)
+        _rag_facts = {
+            f"{row['fact_group']}.{row['fact_key']}": row['fact_value']
+            for row in ((lead_memory_before or {}).get("facts") or [])
+            if isinstance(row, dict) and row.get("fact_group") and row.get("fact_key")
+        }
+        for _f in (_pre_validated or []):
+            if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                _rag_facts[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+        rag_result = _answer_rag_message(message, contract, _rag_facts)
         reply = rag_result["reply"]
     elif _should_use_friendly_llm(message, contract):
         if contract.get("route") == "fallback" and contract.get("intent") == "unknown":
@@ -2146,7 +2169,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                     _icount = increment_insistence(lead_key)
                     _is_final = _icount >= INSISTENCE_LIMIT
                     _natural_reencauce = _build_natural_reencauce(
-                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final
+                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final, facts=active_facts
                     )
                     if _natural_reencauce and _is_final:
                         set_pause(lead_key)
@@ -2188,8 +2211,8 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
         if _has_proof_ninguno:
             _objection_fired = True
             _FIELD_LABELS = {
-                "documents.proof": "las cartas laborales membretadas",
-                "documents.labor_letters_status": "las cartas laborales",
+                "documents.proof": "su comprobante laboral",
+                "documents.labor_letters_status": "su comprobante laboral",
             }
             _field_label = _FIELD_LABELS.get("documents.proof", "el documento")
             reply = _answer_objection_message(message, lead_memory_before, _field_label)

@@ -98,10 +98,12 @@ Dos decisiones del usuario (2026-07-07, tras la Fase G1 de gemini-natural-recrui
   business_route_classifier,current_turn}.py`, `app/lead_memory/{profile_extractor,
   expediente}.py`, `app/orchestrators/knowledge_orchestrator.py`, `app/app.py`
   (audio + imports), seed Neo4j, `.env`, y todos los tests que mockeaban Groq.
-- **Config**: nuevas `GEMINI_MODEL`, `GEMINI_MAX_TOKENS`, `GEMINI_TEMPERATURE`;
+- **Config**: nuevas `GEMINI_MODEL` (default `gemini-2.5-flash`),
+  `GEMINI_MAX_TOKENS`, `GEMINI_TEMPERATURE`;
   retiro de todas las `GROQ_*`. La key del eval se ROTA antes de producción real.
-- **Cuota**: en el free tier (5 RPM) TODA la carga LLM pasa a Gemini sin colchón →
-  el protocolo de cadencia en pruebas es OBLIGATORIO (mensajes espaciados 30-40s);
+- **Cuota**: TODA la carga LLM pasa a Gemini sin colchón → Gemini 2.5 Flash es el
+  default y el protocolo de cadencia en pruebas es OBLIGATORIO (3 RPM / 20s entre
+  mensajes);
   producción requiere tier pago ANTES del corte final (sin Groq no hay red).
 - **Riesgo**: alto — proveedor único sin red alterna. Mitigación: degradación por
   contrato de error en cada camino (el sistema nunca crashea por fallo LLM),

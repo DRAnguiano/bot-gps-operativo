@@ -8,15 +8,15 @@ Modos:
                    agent_answer_historica. Sin LLM, sin DB.
   --mode classify  Llama classify_message() por cada pregunta y compara
                    primary/secondary intents contra route_esperada_sugerida.
-                   Requiere GROQ_API_KEY en entorno.
-  --mode full      classify + plan_and_respond. Requiere GROQ_API_KEY.
+                   Requiere GEMINI_API_KEY en entorno.
+  --mode full      classify + plan_and_respond. Requiere GEMINI_API_KEY.
 
 Flag shadow:
   --include-business-shadow
-                   Activa el business route shadow classifier en CUALQUIER modo.
-                   Agrega columnas business_* al reporte. Requiere GROQ_API_KEY.
+                   Activa el shadow del extractor unificado en CUALQUIER modo.
+                   Agrega columnas business_* al reporte. Requiere GEMINI_API_KEY.
                    Shadow es read-only: no escribe DB, Chatwoot ni labels.
-                   En --mode dry fuerza 1 LLM call/fila (solo shadow).
+                   En --mode dry fuerza 1 LLM call/fila (solo extractor).
                    En --mode classify/full agrega ~1 LLM call/fila extra.
 
 mapping_status:
@@ -26,9 +26,9 @@ mapping_status:
   CONTRACT_GAP   ruta sin mapping definido.
   ERROR          excepción técnica.
 
-Límites Groq (llama-3.1-8b-instant, tier free):
-  RPM: 30 | TPM: 6000 | Daily: 500K tokens
-  Default --requests-per-minute 1.5 → sleep_by_rpm=40s → effective 40s
+Límites Gemini free observados:
+  usar cadencia conservadora aunque el modelo tenga más RPM nominal.
+  Default --requests-per-minute 3.0 → sleep_by_rpm=20s → effective 20s
 
 Corrida por bloques:
   --start-index 0  --limit 25 --append --output reports/qa_all.csv
@@ -53,14 +53,142 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Shadow classifier — wrapper lazy a nivel módulo.
-# El nombre existe aquí (parcheable por patch() en tests), pero el import real
-# ocurre en call time para que test_import_error y entornos sin app/ funcionen.
+# Shadow del extractor unificado — wrapper lazy a nivel módulo.
+# El nombre conserva compatibilidad con tests/reportes previos, pero ya NO importa
+# el classifier retirado. La fuente del shadow es turn_extractor + Capa 2.
 def classify_business_route_shadow(*args, **kwargs):  # type: ignore[misc]
-    from app.knowledge.business_route_classifier import (  # noqa: PLC0415
-        classify_business_route_shadow as _fn,
+    from app.knowledge.business_route_schema import (  # noqa: PLC0415
+        AmbiguityFlag,
+        BusinessRouteOutput,
+        BusinessSignal,
+        ExplicitFact,
+        RequestedInfoItem,
     )
-    return _fn(*args, **kwargs)
+    from app.knowledge.turn_extractor import extract_turn, validate_extraction  # noqa: PLC0415
+
+    text = kwargs.get("text")
+    if text is None and args:
+        text = args[0]
+    text = str(text or "")
+    conv_cls = kwargs.get("conversational_classification") or {}
+
+    extraction = extract_turn(text)
+    facts = validate_extraction(extraction)
+
+    out = BusinessRouteOutput()
+    out.conversational_intents = [
+        i for i in [
+            conv_cls.get("primary_intent"),
+            *(conv_cls.get("secondary_intents") or []),
+        ] if i
+    ]
+
+    for fact in facts:
+        key = f"{fact.get('fact_group')}.{fact.get('fact_key')}"
+        value = str(fact.get("fact_value") or "")
+        out.explicit_facts[key] = ExplicitFact(
+            field=key,
+            value=value,
+            evidence=value,
+            confidence=float(fact.get("confidence") or 0.0),
+        )
+
+    text_l = text.lower()
+    intents = set(out.conversational_intents)
+
+    def add_signal(name: str, evidence: str = "", confidence: float = 0.85) -> None:
+        if not out.has_signal(name):
+            out.business_signals.append(BusinessSignal(name=name, evidence=evidence, confidence=confidence))
+
+    def add_requested(category: str, evidence: str = "") -> None:
+        if category not in {r.category for r in out.requested_info}:
+            out.requested_info.append(RequestedInfoItem(category=category, evidence=evidence))
+
+    if "experience.vehicle_type" in out.explicit_facts:
+        add_signal("objetivo_full_sencillo", out.explicit_facts["experience.vehicle_type"].evidence, 0.9)
+    if "experience.vehicle_type_raw" in out.explicit_facts:
+        out.ambiguity_flags.append(AmbiguityFlag(name="vehicle_type_ambiguous", evidence=out.explicit_facts["experience.vehicle_type_raw"].evidence))
+    if "sencillo" in text_l:
+        add_signal("objetivo_full_sencillo", "sencillo", 0.88)
+    if any(
+        term in text_l
+        for term in (
+            "escuelita",
+            "torton",
+            "carta de recomendación",
+            "carta de recomendacion",
+            "apto medico",
+            "apto médico",
+        )
+    ):
+        add_signal("considerar_escuelita_transmontes", text, 0.86)
+    if any(
+        term in text_l
+        for term in (
+            "solicitando",
+            "en espera",
+            "seguir con el proceso",
+            "seguir el proceso",
+            "citas",
+            "cita",
+            "interesado",
+            "interesada",
+        )
+    ):
+        add_signal("seguimiento_llamada", text, 0.82)
+    if any(
+        term in text_l
+        for term in (
+            "prestaciones",
+            "fondo de ahorro",
+            "horario",
+            "descanso",
+            "pagada",
+            "paga",
+            "pagan",
+            "sueldo",
+            "salario",
+        )
+    ):
+        add_signal("pago_condiciones", text, 0.84)
+    if any(
+        term in text_l
+        for term in (
+            "5ta rueda",
+            "quinta rueda",
+            "op 5ta rueda",
+            "operador 5ta rueda",
+        )
+    ):
+        add_signal("jerga_ambigua_falta_unidad", text, 0.84)
+    if extraction.signals.no_road_experience:
+        add_signal("cecati_sugerido", "sin experiencia", 0.8)
+    if extraction.signals.call_requested or "call_requested" in intents:
+        add_signal("seguimiento_llamada", "llamada", 0.8)
+    if "reingreso" in intents or any(w in text_l for w in ("reingreso", "trabajé antes", "trabaje antes", "ya trabajé", "ya trabaje")):
+        add_signal("reingreso_verificar", "reingreso", 0.9)
+        out.requires_human = True
+        out.profile_context_action = "escalate_to_human"
+    if "b1" in text_l or "visa" in text_l or "estados unidos" in text_l or "usa" in text_l:
+        add_signal("considerar_operador_b1", "B1/visa/EEUU", 0.8)
+        out.requires_human = True
+        out.profile_context_action = "escalate_to_human"
+
+    embedded = (extraction.embedded_question or text).lower()
+    if "pay_question" in intents or any(w in embedded for w in ("pago", "pagan", "sueldo", "nómina", "nomina", "viático", "viatico", "kilómetro", "kilometro", "km")):
+        add_signal("pago_condiciones", extraction.embedded_question or "", 0.85)
+        add_requested("salary", extraction.embedded_question or "")
+    if "logistics_question" in intents or any(w in embedded for w in ("ruta", "tramo", "base", "patio", "laredo", "mty", "monterrey", "traslado", "descanso")):
+        add_signal("ubicacion_base_traslado", extraction.embedded_question or "", 0.85)
+        add_requested("route_details", extraction.embedded_question or "")
+    if "documents_question" in intents or any(w in embedded for w in ("documento", "requisito", "licencia", "apto", "cartas", "imss")):
+        add_signal("documentos_requisitos", extraction.embedded_question or "", 0.85)
+        add_requested("documents_required", extraction.embedded_question or "")
+    if "vacancy_question" in intents or any(w in embedded for w in ("vacante", "información", "informacion", "operador especializado")):
+        add_signal("vacante_info_general", extraction.embedded_question or "", 0.85)
+        add_requested("vacancy_information", extraction.embedded_question or "")
+
+    return out
 DEFAULT_INPUT = REPO_ROOT / "tests/fixtures/response_qa/matriz_qa.csv"
 DEFAULT_OUTPUT = REPO_ROOT / "reports/qa_response_matrix.csv"
 
@@ -208,7 +336,7 @@ _SHADOW_EMPTY: dict[str, Any] = {
     "profile_context_available": "false",
 }
 
-SHADOW_TOKENS_ESTIMATE = 1200  # aprox tokens por llamada al shadow classifier
+SHADOW_TOKENS_ESTIMATE = 1200  # aprox tokens por llamada al extractor unificado
 
 
 # ── Helpers — forbidden phrases ───────────────────────────────────────────────
@@ -311,13 +439,13 @@ def _extract_vehicle_fact(question: str) -> tuple[str, str]:
     return vt, bfm
 
 
-# ── Business route shadow classifier ─────────────────────────────────────────
+# ── Shadow del extractor unificado ───────────────────────────────────────────
 
 def _run_business_shadow(
     question: str,
     conv_cls: dict | None = None,
 ) -> dict[str, Any]:
-    """Llama al shadow classifier y convierte el output a campos de reporte.
+    """Llama al extractor unificado en modo shadow y lo convierte a reporte.
 
     Never raises. En error devuelve _SHADOW_EMPTY con status=ERROR.
     Read-only: no escribe DB, Chatwoot ni labels.
@@ -337,6 +465,8 @@ def _run_business_shadow(
             "business_shadow_error": f"import_error: {type(exc).__name__}: {exc}",
         }
     except Exception as exc:
+        if type(exc).__name__ == "LLMUnavailableError" or "Gemini no disponible" in str(exc):
+            raise
         return {
             **_SHADOW_EMPTY,
             "business_shadow_status": "ERROR",
@@ -378,6 +508,21 @@ def _run_business_shadow(
     }
 
 
+def _shadow_context_text(row: dict[str, str]) -> str:
+    """Texto de contexto para el shadow.
+
+    Usa la pregunta candidata y, cuando existe, la metadata contextual del caso.
+    Eso ayuda a las filas cortas o con mensaje eliminado sin cambiar la evaluación
+    contra `route_esperada_sugerida`.
+    """
+    parts = [
+        row.get("candidate_question") or "",
+        row.get("topic") or "",
+        row.get("agent_answer_historica") or "",
+    ]
+    return "\n".join(part.strip() for part in parts if part and part.strip())
+
+
 def _make_row_fn(base_fn: Any, include_shadow: bool) -> Any:
     """Envuelve base_fn para agregar shadow fields cuando include_shadow=True.
 
@@ -394,7 +539,7 @@ def _make_row_fn(base_fn: Any, include_shadow: bool) -> Any:
     def _combined(row: dict[str, str]) -> dict[str, Any]:
         result = base_fn(row)
 
-        question = (row.get("candidate_question") or "")
+        question = _shadow_context_text(row)
         # Reusar la clasificación conversacional si ya fue calculada
         conv_cls: dict | None = None
         primary = result.get("actual_primary_intent", "")
@@ -407,9 +552,72 @@ def _make_row_fn(base_fn: Any, include_shadow: bool) -> Any:
 
         shadow_fields = _run_business_shadow(question, conv_cls)
         result.update(shadow_fields)
+        if shadow_fields.get("business_shadow_status") == "ERROR":
+            result["status"] = "ERROR"
+            result["mapping_status"] = "ERROR"
+            existing = result.get("comment", "")
+            extra = f"Extractor shadow error: {shadow_fields.get('business_shadow_error', '')}"
+            result["comment"] = f"{existing}; {extra}".lstrip("; ") if existing else extra
+        else:
+            _apply_shadow_route_evaluation(result, row, shadow_fields)
         return result
 
     return _combined
+
+
+def _apply_shadow_route_evaluation(
+    result: dict[str, Any],
+    row: dict[str, str],
+    shadow_fields: dict[str, Any],
+) -> None:
+    """Evalúa route_esperada_sugerida contra señales del extractor unificado.
+
+    Mantiene compatibilidad de columnas históricas: actual_business_route almacena
+    las señales business_* en formato pipe-separated y mapping_status/status reflejan
+    si el extractor cubrió la ruta esperada.
+    """
+    route = row.get("route_esperada_sugerida") or ""
+    signals = [s for s in (shadow_fields.get("business_signal_names") or "").split("|") if s]
+    fact_keys = [f for f in (shadow_fields.get("business_fact_keys") or "").split("|") if f]
+    result["actual_business_route"] = "|".join(signals)
+
+    if not route:
+        return
+    if route == "otros_rag":
+        result["mapping_status"] = "PASS_STRONG"
+        result["mapping_strength"] = "strong"
+        result["match_source"] = "shadow_wildcard"
+        result["matched_intents"] = "[]"
+        result["pass_route"] = True
+        result["status"] = "PASS" if result.get("pass_forbidden_phrases", True) else "FAIL"
+        return
+    if route in signals:
+        result["mapping_status"] = "PASS_STRONG"
+        result["mapping_strength"] = "strong"
+        result["match_source"] = "business_shadow"
+        result["matched_intents"] = json.dumps([route], ensure_ascii=False)
+        result["pass_route"] = True
+        result["status"] = "PASS" if result.get("pass_forbidden_phrases", True) else "FAIL"
+        return
+    if route == "objetivo_full_sencillo" and "experience.vehicle_type" in fact_keys:
+        result["mapping_status"] = "PASS_STRONG"
+        result["mapping_strength"] = "strong"
+        result["match_source"] = "business_fact"
+        result["matched_intents"] = json.dumps(["experience.vehicle_type"], ensure_ascii=False)
+        result["pass_route"] = True
+        result["status"] = "PASS" if result.get("pass_forbidden_phrases", True) else "FAIL"
+        return
+
+    result["mapping_status"] = "REVIEW_MAPPING"
+    result["mapping_strength"] = "review"
+    result["match_source"] = "none"
+    result["matched_intents"] = "[]"
+    result["pass_route"] = False
+    if result.get("status") == "PASS":
+        result["status"] = "REVIEW"
+    existing = result.get("comment", "")
+    extra = f"Extractor shadow signals {signals} did not match expected route '{route}'."
+    result["comment"] = f"{existing}; {extra}".lstrip("; ") if existing else extra
 
 
 # ── Rate limit / retry ────────────────────────────────────────────────────────
@@ -649,7 +857,7 @@ def _effective_tokens_per_case(
     """Tokens estimados por caso según modo y shadow.
 
     Sin shadow: tokens_per_call. Con shadow: tokens_per_call + SHADOW_TOKENS_ESTIMATE
-    (en modo dry solo el shadow llama al LLM, así que es SHADOW_TOKENS_ESTIMATE).
+    (en modo dry solo el extractor llama al LLM, así que es SHADOW_TOKENS_ESTIMATE).
     """
     if include_business_shadow:
         if mode == "dry":
@@ -715,9 +923,9 @@ def run(
     est_min = ((len(rows) - 1) * eff_sleep / 60.0) if len(rows) > 1 else 0.0
     print(f"\nCases selected:              {len(rows)}", file=sys.stderr)
     if include_business_shadow:
-        print("Business shadow:             enabled", file=sys.stderr)
-        print("Business shadow is read-only", file=sys.stderr)
-        print("Business shadow may use LLM", file=sys.stderr)
+        print("Unified extractor shadow:    enabled", file=sys.stderr)
+        print("Extractor shadow is read-only", file=sys.stderr)
+        print("Extractor shadow may use LLM", file=sys.stderr)
     if needs_llm:
         print(f"Estimated tokens/call:       {effective_tokens}", file=sys.stderr)
         print(f"Estimated total tokens:      {est_tokens:,}", file=sys.stderr)
@@ -882,7 +1090,7 @@ def main() -> None:
     p.add_argument("--route-filter", help="Filtrar por route_esperada_sugerida exacta")
     p.add_argument("--priority", help="Filtrar por prioridad (Alta, Media)")
     # Rate-limit
-    p.add_argument("--requests-per-minute", type=float, default=1.5)
+    p.add_argument("--requests-per-minute", type=float, default=3.0)
     p.add_argument("--tokens-per-minute", type=int, default=6000)
     p.add_argument("--estimated-tokens-per-call", type=int, default=2800)
     p.add_argument("--sleep-seconds", type=float, default=0.0)
@@ -895,14 +1103,14 @@ def main() -> None:
     # Reanudación
     p.add_argument("--append", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="No escribe archivos de salida")
-    # Shadow classifier
+    # Unified extractor shadow
     p.add_argument(
         "--include-business-shadow",
         action="store_true",
         default=False,
         help=(
-            "Activa el business route shadow classifier (read-only). "
-            "Agrega columnas business_* al CSV. Requiere GROQ_API_KEY."
+            "Activa el shadow del extractor unificado (read-only). "
+            "Agrega columnas business_* al CSV. Requiere GEMINI_API_KEY."
         ),
     )
     args = p.parse_args()
@@ -912,10 +1120,10 @@ def main() -> None:
         print(f"ERROR: No se encontró input: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    needs_groq = args.mode in ("classify", "full") or args.include_business_shadow
-    if needs_groq and not os.getenv("GROQ_API_KEY"):
+    needs_gemini = args.mode in ("classify", "full") or args.include_business_shadow
+    if needs_gemini and not os.getenv("GEMINI_API_KEY"):
         print(
-            "ERROR: GROQ_API_KEY no definida. "
+            "ERROR: GEMINI_API_KEY no definida. "
             "Usar --mode dry sin --include-business-shadow para correr sin LLM.",
             file=sys.stderr,
         )

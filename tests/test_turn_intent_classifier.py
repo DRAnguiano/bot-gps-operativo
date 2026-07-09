@@ -1,7 +1,7 @@
 """Tests para el Turn Intent Pre-Classifier (TIPC).
 
-Happy-path con Gemini real (marcados external_llm: 5 RPM free tier no aguanta la
-ráfaga del gate unitario); fail-safe sin API key.
+Happy-path con Gemini real (marcados external_llm: requieren cadencia; no deben
+correr en ráfaga dentro del gate unitario); fail-safe sin API key.
 """
 import os
 

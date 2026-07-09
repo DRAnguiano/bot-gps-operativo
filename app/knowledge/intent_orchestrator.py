@@ -19,6 +19,11 @@ from typing import Any
 
 from app.indexer import call_llm
 from app.knowledge.context_builder import build_generation_prompt, retrieve_preferred_context
+from app.knowledge.current_turn import (
+    license_requirement_question,
+    residency_document_question,
+    vehicle_vacancy_question,
+)
 from app.knowledge.memory_guard import apply_memory_guard
 
 # ── Funnel de 6 preguntas (esquema v1 §1) ────────────────────────────────────
@@ -59,21 +64,11 @@ def _residency_prompt_note(facts: dict[str, Any] | None) -> str:
 
 
 def _vehicle_type_question(facts: dict[str, Any]) -> str:
-    cat = (facts.get("license.category") or "").upper()
-    if cat == "B":
-        return (
-            "Con licencia tipo B la vacante disponible es de sencillo. "
-            "¿Le interesa una vacante de operador sencillo?"
-        )
-    if cat == "E":
-        return "¿Le interesa una vacante de tracto full o de sencillo?"
-    return "¿Su experiencia es en tracto full o en sencillo? Las vacantes disponibles son para operadores de tracto full o sencillo."
+    return vehicle_vacancy_question(facts)
 
 
 def _document_question(facts: dict[str, Any]) -> str:
-    if _is_local(facts):
-        return "¿Cuenta con cartas laborales o semanas cotizadas del IMSS?"
-    return "¿Cuenta con 2 cartas laborales membretadas de sus empleos anteriores?"
+    return residency_document_question(facts)
 
 
 FUNNEL_STEPS: list[dict[str, Any]] = [
@@ -141,6 +136,8 @@ def next_funnel_question(
         # dynamic questions (2.4 / 2.5)
         if step["field"] == "experience.vehicle_type":
             return _vehicle_type_question(facts)
+        if step["field"] == "license":
+            return license_requirement_question(facts)
         if step["field"] == "documents.proof":
             return _document_question(facts)
         return step["question"]

@@ -36,7 +36,8 @@ contrato que sus callers ya manejan:
 únicamente quede como camino para todas las respuestas gemini".
 
 **D2 — Config propia de Gemini, sin reciclar constantes Groq.** `GEMINI_MODEL`
-(default `gemini-2.5-flash`), `GEMINI_MAX_TOKENS` (default 500),
+(default `gemini-2.5-flash` desde 2026-07-08 para ampliar margen de RPM en
+free tier/staging), `GEMINI_MAX_TOKENS` (default 500),
 `GEMINI_TEMPERATURE` (default `TEMPERATURE` genérica o 0.0),
 `GEMINI_TIMEOUT_SECONDS` (existente, 20). `call_gemini_llm` y todos los dispatch
 usan estas; ninguna función nueva lee `GROQ_*`. thinkingBudget=0 en TODAS las
@@ -94,8 +95,9 @@ prompt), léxico de vigencia (validador regex post-generación se mantiene).
 - **Proveedor único sin red alterna** → degradación por contrato de error en cada
   camino (el sistema nunca crashea por fallo LLM; a lo sumo un turno degrada a
   texto determinista o señales neutras); retiro físico de Groq solo al final (D7).
-- **5 RPM free tier con TODA la carga en Gemini** → cadencia obligatoria en pruebas
-  (30-40s entre mensajes); tier pago ANTES del corte final a producción.
+- **Free tier con TODA la carga en Gemini** → Gemini 2.5 Flash como default y cadencia
+  obligatoria en pruebas (3 RPM / 20s entre mensajes); tier pago ANTES del corte final a
+  producción.
 - **Extractor migrado regresiona jerga** → gate matriz 72 casos antes del corte.
 - **Respuesta generada puede violar tono** → validadores post-generación existentes
   (vigencia, banned terms) + fallback determinista.

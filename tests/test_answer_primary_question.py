@@ -171,3 +171,35 @@ def test_only_rag_questions_are_considered(monkeypatch):
         "todo bien? oye y de rutas?", {"route": "profile", "requires_rag": False}, None
     )
     assert out is None
+
+
+def test_live_rag_prompt_includes_local_residency_note(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        KO,
+        "retrieve_preferred_context",
+        lambda message, preferred_sources=None: {
+            "items": [{"id": "1", "source": "01_pago_prestaciones.md", "score": 0.9}],
+            "context_text": "Pago base por kilometraje y prestaciones.",
+            "sources": ["01_pago_prestaciones.md"],
+            "timing_ms": 1.0,
+        },
+    )
+
+    def _fake_prompt(*, message, knowledge_contract, context_text, residency_note=""):
+        captured["residency_note"] = residency_note
+        return "PROMPT"
+
+    monkeypatch.setattr(KO, "build_generation_prompt", _fake_prompt)
+    monkeypatch.setattr(KO, "call_llm", lambda prompt: "Respuesta ok")
+
+    out = KO._answer_rag_message(
+        "soy de Gómez Palacio y cuánto pagan",
+        {"intent": "pay_question", "route": "rag", "preferred_sources": ["01_pago_prestaciones.md"]},
+        {"candidate.city": "Gómez Palacio"},
+    )
+
+    assert out["reply"] == "Respuesta ok"
+    assert "LOCAL de la ZM Laguna" in captured["residency_note"]
+    assert "Gómez Palacio" in captured["residency_note"]

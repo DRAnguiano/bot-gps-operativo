@@ -54,6 +54,54 @@ def test_affirmative_to_summary_confirms():
     assert facts.get("funnel.summary_confirmed") == "true"
 
 
+def test_asi_es_to_summary_confirms():
+    summary = build_funnel_summary(_COMPLETE)
+    facts = _extract_context_confirmation_facts(normalize_text("así es"), summary)
+    assert facts.get("funnel.summary_confirmed") == "true"
+
+
+def test_todo_bien_to_summary_confirms():
+    summary = build_funnel_summary(_COMPLETE)
+    facts = _extract_context_confirmation_facts(normalize_text("todo bien"), summary)
+    assert facts.get("funnel.summary_confirmed") == "true"
+
+
+def test_esta_bien_to_summary_confirms():
+    summary = build_funnel_summary(_COMPLETE)
+    facts = _extract_context_confirmation_facts(normalize_text("está bien"), summary)
+    assert facts.get("funnel.summary_confirmed") == "true"
+
+
+def test_llm_fallback_confirms_colloquial_affirmation(monkeypatch):
+    summary = build_funnel_summary(_COMPLETE)
+    monkeypatch.setattr(
+        "app.knowledge.current_turn._llm_summary_affirmation",
+        lambda text: text == "clarines",
+    )
+    facts = _extract_context_confirmation_facts(normalize_text("clarines"), summary)
+    assert facts.get("funnel.summary_confirmed") == "true"
+
+
+def test_summary_confirmation_does_not_leak_other_facts(monkeypatch):
+    summary = build_funnel_summary(_COMPLETE)
+    monkeypatch.setattr(
+        "app.knowledge.current_turn._llm_summary_affirmation",
+        lambda text: text == "awiwi xd",
+    )
+    facts = _extract_context_confirmation_facts(normalize_text("awiwi xd"), summary)
+    assert facts == {"funnel.summary_confirmed": "true"}
+
+
+def test_llm_fallback_does_not_override_negative(monkeypatch):
+    summary = build_funnel_summary(_COMPLETE)
+    monkeypatch.setattr(
+        "app.knowledge.current_turn._llm_summary_affirmation",
+        lambda text: True,
+    )
+    facts = _extract_context_confirmation_facts(normalize_text("no, la ciudad está mal"), summary)
+    assert "funnel.summary_confirmed" not in facts
+
+
 def test_negative_to_summary_does_not_confirm():
     summary = build_funnel_summary(_COMPLETE)
     facts = _extract_context_confirmation_facts(normalize_text("no, la ciudad está mal"), summary)
