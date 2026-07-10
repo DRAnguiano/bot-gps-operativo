@@ -81,6 +81,10 @@ services:
       - .env
     environment:
       ANONYMIZED_TELEMETRY: "false"
+      # La suite corre determinista: la transición generada del funnel se apaga
+      # aquí aunque el .env de prod la tenga activa (los tests que la ejercitan
+      # la encienden con mock.patch.dict + dispatch_generation mockeado).
+      FUNNEL_LLM_TRANSITIONS: "false"
     working_dir: /app
     volumes:
       - ./app:/app/app:ro

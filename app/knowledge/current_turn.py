@@ -9,10 +9,56 @@ from app.knowledge.business_hours import is_business_hours
 from app.knowledge.text_normalizer import normalize_text
 
 # Conectores breves y VARIADOS para la transición del funnel (sin eco de datos).
-# Variar evita el tono robótico de un acuse fijo; el saludo con nombre va aparte.
+# Desde FUNNEL_LLM_TRANSITIONS son SOLO la degradación determinista (D8): el acuse
+# primario lo genera el LLM situado; el saludo con nombre va aparte.
 _FUNNEL_CONNECTORS: tuple[str, ...] = (
     "Va.", "Perfecto.", "Listo.", "Muy bien.", "De acuerdo.", "Bien.", "Claro.",
 )
+
+
+def generate_funnel_transition_reply(
+    message: str | None,
+    fresh_facts: dict[str, Any] | None,
+    question: str,
+    fallback: str,
+) -> str:
+    """Acuse + siguiente pregunta del funnel GENERADOS por el LLM situado.
+
+    Feedback usuario 2026-07-09: el conector enlatado ("Va.") + pregunta pegada se
+    siente robótico. Con contexto (mensaje del candidato, datos capturados este
+    turno y el ÚNICO dato faltante) el LLM reconoce lo compartido y redirige al
+    funnel en una sola respuesta natural, sin re-preguntar lo ya dado. La pregunta
+    del funnel sigue siendo deterministra en CONTENIDO (qué dato se pide y en qué
+    orden); el LLM solo la reformula. Gate por env FUNNEL_LLM_TRANSITIONS (default
+    off) para no volver no-deterministas los caminos existentes; ante flag off,
+    fallo del LLM o salida inválida (vacía, sin pregunta, desbordada) degrada al
+    conector enlatado + pregunta literal (D8: enlatado = fallback, nunca primario).
+    """
+    if os.getenv("FUNNEL_LLM_TRANSITIONS", "false").lower() not in {"1", "true", "yes"}:
+        return fallback
+    try:
+        from app.gemini_client import dispatch_generation
+        from app.persona_config import SYSTEM_PROMPT
+
+        datos = "; ".join(
+            f"{k}: {v}" for k, v in (fresh_facts or {}).items() if v
+        ) or "(ninguno nuevo)"
+        prompt = (
+            f"El candidato acaba de escribir: «{(message or '').strip()[:400]}».\n"
+            f"Datos que el sistema ya capturó y guardó de ese mensaje: {datos}.\n"
+            f"Único dato que falta pedirle ahora: «{question}»\n"
+            "Redacta la respuesta de Mundo en 1-2 frases: reconoce breve y natural lo que "
+            "compartió (sin repetirle dato por dato, sin eco literal, sin prometer "
+            "contratación ni evaluar si califica) y cierra pidiendo ÚNICAMENTE ese dato "
+            "faltante — puedes reformular la pregunta con naturalidad, pero pide ese mismo "
+            "dato y ningún otro. No vuelvas a preguntar nada que ya haya proporcionado."
+        )
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.6, max_tokens=160) or "").strip()
+        if not out or ("?" not in out and "¿" not in out) or len(out) > 500:
+            return fallback
+        return out
+    except Exception:
+        return fallback
 
 
 
@@ -916,13 +962,17 @@ def build_current_turn_ack(
             return f"Queda corregido — {'; '.join(_fixed)}. ¿Así es correcto?"
 
     # Sin eco de datos (feedback usuario 2026-07-03: se sentía robótico repetir cada
-    # dato). Un conector natural BREVE y VARIADO + la siguiente pregunta del funnel.
-    # El saludo con nombre (arriba) es la única confirmación con dato. Las respuestas a
-    # negativas/absurdos las genera el LLM aparte (empathetic-funnel D1).
+    # dato). Acuse situado GENERADO (FUNNEL_LLM_TRANSITIONS) con el conector enlatado
+    # + pregunta literal como degradación. El saludo con nombre (arriba) es la única
+    # confirmación con dato. Las respuestas a negativas/absurdos las genera el LLM
+    # aparte (empathetic-funnel D1).
     _next_q = _next_funnel_question_or_none(facts)
     if _next_q is not None:
         _connector = random.choice(_FUNNEL_CONNECTORS)
-        return _join_ack_and_question(_connector, _next_q)
+        return generate_funnel_transition_reply(
+            message, current, _next_q,
+            fallback=_join_ack_and_question(_connector, _next_q),
+        )
     # Perfil completo sin confirmar: emite el resumen; confirmado: el cierre.
     if not summary_confirmed(facts):
         return build_funnel_summary(facts)

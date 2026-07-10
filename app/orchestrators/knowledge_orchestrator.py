@@ -2302,8 +2302,21 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             # descartes. Compón: ack del dato + respuesta a la pregunta + siguiente
             # pregunta del funnel. Sin RAG, solo ack (+ nudge si hay).
             _rag_ans = reply.strip() if (rag_result is not None and reply and reply.strip()) else ""
-            _parts = [p for p in (_r1_ack, _rag_ans, nudge) if p]
-            reply = "\n\n".join(_parts) if _parts else (_r1_ack or "")
+            if not _rag_ans and nudge:
+                # Dato confirmado sin pregunta embebida: acuse situado GENERADO
+                # (FUNNEL_LLM_TRANSITIONS); conector + pregunta como degradación.
+                from app.knowledge.current_turn import generate_funnel_transition_reply
+                _fresh_r1 = {
+                    f"{_f['fact_group']}.{_f['fact_key']}": _f["fact_value"]
+                    for _f in (_pre_validated or []) if _f.get("fact_value") is not None
+                }
+                reply = generate_funnel_transition_reply(
+                    message, _fresh_r1, nudge,
+                    fallback="\n\n".join(p for p in (_r1_ack, nudge) if p),
+                )
+            else:
+                _parts = [p for p in (_r1_ack, _rag_ans, nudge) if p]
+                reply = "\n\n".join(_parts) if _parts else (_r1_ack or "")
         elif _objection_fired:
             # Acuse empático ya está en reply; agregar siguiente pregunta del funnel si hay
             if nudge:
@@ -2318,7 +2331,20 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             _is_first_rag = rag_result is not None and not _facts_before.get("candidate.name")
             if _is_first_rag:
                 nudge = f"Si le interesa continuar con la vacante, {nudge[0].lower()}{nudge[1:]}"
-            reply = f"{reply}\n\n{nudge}"
+            if profile_ack_used:
+                # Turno de datos puro: acuse situado GENERADO (reconoce lo aportado y
+                # redirige con la pregunta del funnel en una sola voz); conector +
+                # pregunta literal solo como degradación (FUNNEL_LLM_TRANSITIONS).
+                from app.knowledge.current_turn import generate_funnel_transition_reply
+                _fresh_now = {
+                    f"{_f['fact_group']}.{_f['fact_key']}": _f["fact_value"]
+                    for _f in (_pre_validated or []) if _f.get("fact_value") is not None
+                }
+                reply = generate_funnel_transition_reply(
+                    message, _fresh_now, nudge, fallback=f"{reply}\n\n{nudge}",
+                )
+            else:
+                reply = f"{reply}\n\n{nudge}"
         else:
             asked_field_keys = []  # no nudge appended → no field was asked
             if profile_ack_used:
@@ -2326,16 +2352,23 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                 # emitió pregunta, garantiza que el turno lleve la siguiente pregunta del
                 # funnel (o el cierre) desde la MISMA fuente única que el guard —nunca un
                 # conector suelto—. Alinea la ruta del orquestador con la del worker.
-                from app.knowledge.current_turn import next_question_from_missing_facts
+                from app.knowledge.current_turn import (
+                    generate_funnel_transition_reply,
+                    next_question_from_missing_facts,
+                )
                 _merged_ack = {
                     f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
                     for r in (lead_memory_before.get("facts") or []) if r.get("fact_value")
                 }
+                _fresh_ack = {}
                 for _f in (_pre_validated or []):
                     _merged_ack[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+                    _fresh_ack[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
                 _next_q = next_question_from_missing_facts(_merged_ack)
                 if _next_q:
-                    reply = f"{reply}\n\n{_next_q}"
+                    reply = generate_funnel_transition_reply(
+                        message, _fresh_ack, _next_q, fallback=f"{reply}\n\n{_next_q}",
+                    )
 
     # Guard de léxico de vigencia sobre la respuesta final (todas las rutas): el bot
     # nunca emite "caduca/caducidad" al candidato.
