@@ -621,6 +621,41 @@ def process_chatwoot_debounced_message(
             and _has_profile_signal
             and _current_turn_facts
         )
+        # fix-compound-summary-confirmation D1: la confirmación del resumen sobrevive
+        # a turnos compuestos. Cuando el guard NO dispara porque el mensaje trae
+        # pregunta de negocio ("Sí, todo bien... ¿hacen doping?"), el fact
+        # funnel.summary_confirmed ya computado por extract_current_turn_facts se
+        # persiste SOLO (sin tocar el reply — el orquestador responde la pregunta
+        # igual que hoy). Sin esto, el siguiente turno re-emite el resumen ya
+        # confirmado (bug en vivo conv 175, 2026-07-10).
+        if (
+            not _guard_should_fire
+            and _current_turn_facts.get("funnel.summary_confirmed") == "true"
+            and not result.get("requires_human")
+        ):
+            try:
+                _lm_confirm = get_lead_memory(conversation_key=conversation_key_for_facts)
+                _lk_confirm = (
+                    (_lm_confirm.get("lead") or {}).get("lead_key")
+                    or conversation_key_for_facts
+                )
+                from app.lead_memory.repository import upsert_lead_fact as _ulf_confirm
+                _ulf_confirm(
+                    lead_key=_lk_confirm,
+                    fact_group="funnel",
+                    fact_key="summary_confirmed",
+                    fact_value="true",
+                    confidence=0.95,
+                    source="summary_confirm_compound",
+                    source_text=combined_content[:200],
+                )
+                print(
+                    "[SUMMARY_CONFIRM_COMPOUND]",
+                    json.dumps({"lead_key": _lk_confirm, "conversation_id": conversation_id}, ensure_ascii=False),
+                    flush=True,
+                )
+            except Exception as _exc_confirm:
+                print(f"[SUMMARY_CONFIRM_COMPOUND] error: {_exc_confirm}", flush=True)
         if _guard_should_fire:
             lead_memory = get_lead_memory(conversation_key=conversation_key_for_facts)
             saved_facts = {

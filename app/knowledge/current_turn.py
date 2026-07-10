@@ -51,7 +51,10 @@ def generate_funnel_transition_reply(
             "compartió (sin repetirle dato por dato, sin eco literal, sin prometer "
             "contratación ni evaluar si califica) y cierra pidiendo ÚNICAMENTE ese dato "
             "faltante — puedes reformular la pregunta con naturalidad, pero pide ese mismo "
-            "dato y ningún otro. No vuelvas a preguntar nada que ya haya proporcionado."
+            "dato y ningún otro. No vuelvas a preguntar nada que ya haya proporcionado. "
+            "Voz: Mundo habla en PRIMERA PERSONA DEL SINGULAR y trata de usted "
+            "(\"¿Me podría indicar...?\") — nunca plural corporativo (\"indicarnos\", "
+            "\"necesitamos\") ni tuteo."
         )
         out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.6, max_tokens=160) or "").strip()
         if not out or ("?" not in out and "¿" not in out) or len(out) > 500:

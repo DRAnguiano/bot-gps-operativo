@@ -2213,8 +2213,20 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                     _icount = increment_insistence(lead_key)
                     _is_final = _icount >= INSISTENCE_LIMIT
+                    # Facts en scope (persistidos + validados del turno): `active_facts`
+                    # solo existe dentro de _build_funnel_nudge — usarlo aquí producía
+                    # NameError tragado por el except, dejando el re-encauce MUERTO en
+                    # producción (bug en vivo conv 175, 2026-07-10) y el contador de
+                    # insistencia avanzando sin mensaje.
+                    _reencauce_facts = {
+                        f"{r['fact_group']}.{r['fact_key']}": str(r["fact_value"])
+                        for r in (lead_memory_before.get("facts") or []) if r.get("fact_value")
+                    }
+                    for _f in (_pre_validated or []):
+                        if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                            _reencauce_facts[f"{_f['fact_group']}.{_f['fact_key']}"] = str(_f["fact_value"])
                     _natural_reencauce = _build_natural_reencauce(
-                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final, facts=active_facts
+                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final, facts=_reencauce_facts
                     )
                     if _natural_reencauce and _is_final:
                         set_pause(lead_key)
