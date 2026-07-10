@@ -246,7 +246,10 @@ _AUDIO_TRANSCRIBE_PROMPT = (
     "los sustituyas por palabras parecidas): fulero/fulera (operador de tracto full), "
     "full, sencillo, doble articulado, doble, caja seca, quinta rueda, torton, rabón, "
     "tracto, tráiler, apto médico, licencia federal, R-Control, Transmontes, "
-    "semanas del IMSS, cartas laborales, La Laguna, Torreón, Gómez Palacio, Lerdo."
+    "semanas del IMSS, cartas laborales, La Laguna, Torreón, Gómez Palacio, Lerdo.\n"
+    "Los nombres y apellidos del candidato son HISPANOS (p. ej. Elizondo, Elías, "
+    "Eliezer, Munera, Anguiano): no los anglicanices (Elizondo≠Ellison) ni los "
+    "dividas como artículo + palabra (Elizondo≠'el lizondo', Elías≠'el lisa')."
 )
 
 

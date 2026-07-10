@@ -879,6 +879,19 @@ def call_groq_transcribe(audio_bytes: bytes, filename: str = "audio.ogg") -> str
                 file=(filename, audio_bytes),
                 model=GROQ_WHISPER_MODEL,
                 response_format="text",
+                # Sin language fijado Whisper auto-detecta y ANGLICANIZA nombres
+                # hispanos (bug en vivo conv 174: "Elizondo" → "Ellison").
+                language="es",
+                # El prompt de Whisper es SESGO de vocabulario (no instrucción):
+                # orienta jerga del dominio y apellidos hispanos frecuentes para
+                # que no los divida ("el lizondo") ni los anglicanice.
+                prompt=(
+                    "Candidato operador de tractocamión en México. Jerga: fulero, "
+                    "full, sencillo, caja seca, quinta rueda, torton, rabón, tracto, "
+                    "apto médico, licencia federal, Transmontes, La Laguna, Torreón, "
+                    "Gómez Palacio, Lerdo. Nombres y apellidos hispanos: Elizondo, "
+                    "Elías, Eliezer, Munera, Anguiano, Zúñiga, Garza."
+                ),
             )
         # SDK devuelve str directamente con response_format="text"
         return str(result).strip() if result else ""

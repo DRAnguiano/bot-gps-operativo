@@ -112,6 +112,17 @@ Extrae TODO lo que el candidato dijo en ESTE mensaje, en una sola pasada. Devuel
 
 REGLAS DE VALOR (qué dijo el candidato — NO interpretes política de negocio):
 - candidate.name: nombre propio. Ignora saludos ("hola"), afirmaciones ("si","no") y términos de unidad. Si no hay nombre, null.
+  Muchos mensajes vienen TRANSCRITOS de nota de voz y la transcripción daña apellidos
+  hispanos: los divide como artículo + fragmento o los deforma fonéticamente. Si el bot
+  preguntó el nombre y el texto trae "el/él " + fragmento que junto forma un nombre o
+  apellido hispano plausible, ÚNELO y repara al apellido real:
+  · "eliezer el lizondo" → candidate.name="Eliezer Elizondo" (el+lizondo = Elizondo)
+  · "me llamo juan el ías" → candidate.name="Juan Elías"
+  · "soy pedro el lisa" (bot preguntó nombre) → candidate.name="Pedro Elías" si es la
+    lectura hispana plausible; si el fragmento no da un nombre hispano claro, conserva
+    el texto tal cual — NUNCA inventes un apellido sin fragmento que lo soporte.
+  Esta reparación aplica SOLO a candidate.name (no toques ciudades ni otros campos con
+  esta regla) y solo cuando la lectura como artículo no tiene sentido gramatical.
 - candidate.city: ciudad de RESIDENCIA (no destinos ni rutas). Sin marcador de residencia → null.
   El candidato casi siempre reside en MÉXICO (zona de operación: La Laguna/Coahuila/Durango y
   alrededores — Torreón, Gómez Palacio, Lerdo, Saltillo, Monterrey, etc.). Ante un nombre con
