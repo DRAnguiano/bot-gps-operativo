@@ -81,6 +81,12 @@ GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b
 # controla el razonamiento por el parámetro reasoning_effort, ya manejado en
 # _groq_call vía extra_body.
 GROQ_JSON_MODEL = os.getenv("GROQ_JSON_MODEL", "qwen/qwen3.6-27b")
+# TEMPORAL (2026-07-10): Whisper restaurado SOLO como fallback de audio ante el 503
+# sostenido de Gemini — dispatch_audio era el único camino sin red y todo audio caía
+# al guard "Recibí tu audio, pero no pude entenderlo". Whisper pierde jerga trailera
+# (fulero→futbol, bug conv 163) pero una transcripción imperfecta supera al guard;
+# Gemini nativo con glosario sigue siendo el camino primario.
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
 
 
 # Cohere Rerank.
@@ -840,6 +846,56 @@ def call_groq_vision(
         result = _replace_birthdate_with_age(result)
 
     return result
+
+
+def call_groq_transcribe(audio_bytes: bytes, filename: str = "audio.ogg") -> str:
+    """TEMPORAL (2026-07-10): fallback de audio sobre Gemini nativo — Whisper
+    restaurado del pre-migración (af0fa69) SOLO como red ante el 503 sostenido.
+
+    Recorre las 4 keys Groq (primaria → BACKUP → ORG2 → ORG3) ante RateLimitError.
+    Devuelve el texto transcrito o '' ante fallo (el caller cae al audio guard).
+    Whisper no conoce el glosario trailero (fulero→futbol, conv 163): transcripción
+    imperfecta > guard, pero Gemini nativo sigue siendo el camino primario.
+    """
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        print("[groq_transcribe] Falta GROQ_API_KEY", flush=True)
+        return ""
+    if not audio_bytes:
+        return ""
+
+    keys = [("PRIMARY", api_key)]
+    for label, env in (("BACKUP", "GROQ_API_KEY_BACKUP"),
+                       ("ORG2", "GROQ_API_KEY_ORG2"),
+                       ("ORG3", "GROQ_API_KEY_ORG3")):
+        val = os.environ.get(env)
+        if val:
+            keys.append((label, val))
+
+    def _transcribe(key: str) -> str:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as http_client:
+            client = Groq(api_key=key, http_client=http_client)
+            result = client.audio.transcriptions.create(
+                file=(filename, audio_bytes),
+                model=GROQ_WHISPER_MODEL,
+                response_format="text",
+            )
+        # SDK devuelve str directamente con response_format="text"
+        return str(result).strip() if result else ""
+
+    for i, (label, key) in enumerate(keys):
+        try:
+            return _transcribe(key)
+        except GroqRateLimitError as exc:
+            if i + 1 < len(keys):
+                print(f"[groq-fallback] {label} agotada, siguiente key — call_groq_transcribe", flush=True)
+                continue
+            print(f"[groq_transcribe] todas las keys agotadas: {exc}", flush=True)
+            return ""
+        except Exception as exc:
+            print(f"[groq_transcribe] Error ({label}): {type(exc).__name__}: {exc}", flush=True)
+            return ""
+    return ""
 
 
 def call_gemini_llm(prompt: str) -> str:

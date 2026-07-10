@@ -204,13 +204,28 @@ class TestDispatchGeminiPrimaryGroqFallback:
              mock.patch("app.indexer.call_groq_vision", side_effect=RuntimeError("groq caído")):
             assert gc.dispatch_vision(b"img", "prompt") == ""
 
-    def test_audio_success(self):
-        with mock.patch("httpx.post", return_value=_fake_response(text="soy fulero de Torreón")):
+    def test_audio_success_never_calls_whisper(self):
+        with mock.patch("httpx.post", return_value=_fake_response(text="soy fulero de Torreón")), \
+             mock.patch("app.indexer.call_groq_transcribe") as m_groq:
             out = gc.dispatch_audio(b"OggS...")
         assert out == "soy fulero de Torreón"
+        m_groq.assert_not_called()
 
-    def test_audio_failure_returns_empty(self):
-        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")):
+    def test_audio_failure_falls_back_to_whisper_temporal(self):
+        # TEMPORAL 2026-07-10: dispatch_audio era el ÚNICO camino sin red — con
+        # Gemini en 503 todo audio caía al guard "no pude entenderlo". Whisper
+        # pierde jerga (fulero→futbol) pero supera al guard.
+        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")), \
+             mock.patch("app.indexer.call_groq_transcribe", return_value="tengo diez años en full") as m_groq:
+            out = gc.dispatch_audio(b"OggS...")
+        assert out == "tengo diez años en full"
+        m_groq.assert_called_once()
+        # El filename derivado del mime_type le da a Whisper el codec.
+        assert m_groq.call_args.args[1] == "audio.ogg"
+
+    def test_audio_failure_whisper_also_fails_returns_empty(self):
+        with mock.patch("httpx.post", side_effect=httpx.TimeoutException("slow")), \
+             mock.patch("app.indexer.call_groq_transcribe", side_effect=RuntimeError("groq caído")):
             assert gc.dispatch_audio(b"OggS...") == ""
 
     def test_audio_prompt_includes_glossary(self):

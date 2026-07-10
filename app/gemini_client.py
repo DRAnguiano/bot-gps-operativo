@@ -250,11 +250,30 @@ _AUDIO_TRANSCRIBE_PROMPT = (
 )
 
 
+_MIME_TO_AUDIO_EXT = {
+    "audio/mpeg": "audio.mp3",
+    "audio/wav": "audio.wav",
+    "audio/mp4": "audio.m4a",
+    "audio/aac": "audio.aac",
+    "audio/ogg": "audio.ogg",
+    "audio/webm": "audio.webm",
+    "audio/amr": "audio.amr",
+}
+
+
 def dispatch_audio(audio_bytes: bytes, *, mime_type: str = "audio/ogg") -> str:
-    """Transcripción de nota de voz. Ante fallo devuelve '' (mismo contrato que la
-    transcripción fallida anterior: el webhook cae al media guard acotado)."""
+    """Transcripción de nota de voz. Gemini nativo (con glosario trailero) primario;
+    ante fallo cae a Groq Whisper (TEMPORAL 2026-07-10 — pierde jerga: fulero→futbol,
+    pero transcripción imperfecta supera al audio guard). Solo si ambos fallan
+    devuelve '' (el webhook cae al guard acotado)."""
     try:
         return transcribe_audio(audio_bytes, _AUDIO_TRANSCRIBE_PROMPT, mime_type=mime_type)
     except GeminiError as exc:
-        print(f"[gemini_audio] Error: {exc}", flush=True)
-        return ""
+        print(f"[gemini_fallback] audio -> groq whisper (temporal): {exc}", flush=True)
+        try:
+            from app.indexer import call_groq_transcribe
+            filename = _MIME_TO_AUDIO_EXT.get(mime_type, "audio.ogg")
+            return call_groq_transcribe(audio_bytes, filename)
+        except Exception as exc2:
+            print(f"[gemini_audio] Error tras fallback: {exc2}", flush=True)
+            return ""
