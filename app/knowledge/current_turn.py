@@ -36,6 +36,14 @@ def generate_funnel_transition_reply(
     """
     if os.getenv("FUNNEL_LLM_TRANSITIONS", "false").lower() not in {"1", "true", "yes"}:
         return fallback
+    # Preguntas con contenido ESTRUCTURADO (resumen de datos) se entregan verbatim:
+    # una reescritura "válida" (tiene ?, ≤500 chars) puede perder la lista completa
+    # — pasó en vivo (conv 176: entregó "¿me podría confirmar que los datos son
+    # correctos?" sin ningún dato). La reformulación aplica solo a preguntas atómicas.
+    # Los marcadores son los del builder (SUMMARY_HEADER/SUMMARY_BULLET), no literales
+    # duplicados: cualquier candidato/datos producen el mismo esqueleto estructural.
+    if SUMMARY_HEADER in question or SUMMARY_BULLET in question:
+        return fallback
     try:
         from app.gemini_client import dispatch_generation
         from app.persona_config import SYSTEM_PROMPT
@@ -733,7 +741,12 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
 
 # Marker del resumen de confirmación: la afirmación del candidato se detecta por
 # confirmación contextual contra este texto en el último mensaje del bot.
-_TOPIC_SUMMARY_CONFIRM = re.compile(r"es correcto", re.IGNORECASE)
+# Cubre las variantes que el PROPIO sistema emite: "¿Así es correcto?" (funnel
+# determinista), "¿son correctos?" (reformulación LLM, visto en vivo conv 176) y el
+# encabezado del resumen ("le confirmo sus datos registrados").
+_TOPIC_SUMMARY_CONFIRM = re.compile(
+    r"es correcto|son correctos|confirmo sus datos", re.IGNORECASE
+)
 
 _SUMMARY_AFFIRMATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^asi(?:\s+mero)?(?:\s+es)?$"),
@@ -798,6 +811,13 @@ def _llm_summary_affirmation(text: str) -> bool:
     return data.get("affirmative") is True
 
 
+# Marcadores estructurales del resumen: fuente ÚNICA compartida entre el builder
+# y el guard anti-reformulación de generate_funnel_transition_reply. Si la
+# redacción del resumen cambia, cambia aquí y el guard sigue viendo lo mismo.
+SUMMARY_HEADER = "¡Listo! Antes de continuar, le confirmo sus datos registrados:"
+SUMMARY_BULLET = "\n· "
+
+
 def build_funnel_summary(facts: dict[str, Any]) -> str:
     """Resumen determinista de los datos registrados + '¿Es correcto?' (D6).
 
@@ -810,9 +830,9 @@ def build_funnel_summary(facts: dict[str, Any]) -> str:
     for key, label in _SUMMARY_FIELD_DISPLAY:
         val = facts.get(key)
         if val:
-            lines.append(f"· {label}: {_display_val.get(str(val), val)}")
+            lines.append(f"{SUMMARY_BULLET[1:]}{label}: {_display_val.get(str(val), val)}")
     return (
-        "¡Listo! Antes de continuar, le confirmo sus datos registrados:\n"
+        SUMMARY_HEADER + "\n"
         + "\n".join(lines)
         + "\n¿Es correcto? Si algo está mal, dígame el dato y lo corrijo."
     )

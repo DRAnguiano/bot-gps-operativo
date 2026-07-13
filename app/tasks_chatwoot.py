@@ -390,7 +390,10 @@ def process_chatwoot_debounced_message(
         last_bot_message = None
         for _m in reversed(pre_memory.get("messages") or []):
             if isinstance(_m, dict) and _m.get("role") == "assistant":
-                last_bot_message = str(_m.get("message") or "")[:500]
+                # Cola, no cabeza: la pregunta vigente vive al FINAL del mensaje.
+                # El [:500] original dejó ciego al detector de confirmación cuando
+                # el resumen iba al final de una respuesta de 1027 chars (conv 176).
+                last_bot_message = str(_m.get("message") or "")[-2000:]
                 break
 
         # ── Bloque 4: guardia de insistencia — si el lead está en pausa (tras 5 ruegos

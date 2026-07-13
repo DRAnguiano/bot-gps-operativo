@@ -303,8 +303,11 @@ def extract_turn(
 
     known = known_facts or {}
     known_lines = "\n".join(f"- {k}: {v}" for k, v in known.items() if v) or "(ninguno)"
+    # Cola del mensaje del bot: la pregunta activa vive al final; acotar por la
+    # cabeza descartaría justo esa pregunta en respuestas largas.
+    _bot_q = (last_bot_question or "")[-500:]
     user_content = (
-        f"PREGUNTA DEL BOT: {last_bot_question or '(ninguna)'}\n"
+        f"PREGUNTA DEL BOT: {_bot_q or '(ninguna)'}\n"
         f"DATOS YA CONOCIDOS:\n{known_lines}\n"
         f"MENSAJE DEL CANDIDATO: {message}"
     )

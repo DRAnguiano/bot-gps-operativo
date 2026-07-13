@@ -49,6 +49,48 @@ class TestCompoundSummaryConfirmationDetection:
         assert "funnel.summary_confirmed" not in facts
 
 
+class TestDetectionOverFullBotMessage:
+    """conv 176: el resumen re-emitido al FINAL de una respuesta larga (>500 chars)
+    quedaba fuera del truncado head-first y el detector no lo veía; y la variante
+    plural ("son correctos") no matcheaba el marcador singular."""
+
+    def _facts(self, message: str, bot_msg: str) -> dict:
+        return _extract_context_confirmation_facts(
+            normalize_text(message), bot_msg, _turn_signals=TurnIntentSignals(),
+        )
+
+    def test_summary_at_tail_of_long_reply_confirms(self):
+        # Resumen del builder REAL (datos arbitrarios) al final de una respuesta
+        # larga, como lo produce el nudge tras un turno RAG.
+        from app.knowledge.current_turn import build_funnel_summary
+        summary = build_funnel_summary({
+            "candidate.name": "María Zúñiga", "candidate.city": "Torreón",
+            "experience.vehicle_type": "sencillo", "license.category": "B",
+        })
+        long_reply = ("Para el proceso se necesita cumplir varios puntos. " * 15
+                      + "\n\n" + summary)
+        assert len(long_reply) > 500  # el head-truncate original lo dejaba fuera
+        facts = self._facts("sí, así es, ¿cuándo empiezo?", long_reply)
+        assert facts.get("funnel.summary_confirmed") == "true"
+
+    def test_plural_confirmation_variant_confirms(self):
+        # Variante que el propio sistema emitió en vivo (reformulación LLM).
+        bot = "Muchas gracias por la información. ¿Me podría confirmar que los datos son correctos?"
+        facts = self._facts("si, todo bien", bot)
+        assert facts.get("funnel.summary_confirmed") == "true"
+
+    def test_worker_captures_bot_message_tail_not_head(self):
+        # Regresión: la captura de last_bot_message en el worker debe conservar la
+        # COLA (donde vive la pregunta activa), no la cabeza.
+        from app import tasks_chatwoot
+        src = inspect.getsource(tasks_chatwoot.process_chatwoot_debounced_message)
+        # Anclado a la línea de captura (otros [:500] del worker son legítimos).
+        assert '_m.get("message") or "")[:500]' not in src, (
+            "head-truncate reintroducido en la captura de last_bot_message"
+        )
+        assert '_m.get("message") or "")[-2000:]' in src
+
+
 class TestWorkerPersistsConfirmationOutsideGuard:
     def test_compound_persist_block_wired_before_guard(self):
         # El fact debe persistirse aunque _guard_should_fire sea False (pregunta de

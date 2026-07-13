@@ -46,6 +46,59 @@ class TestFlagGate:
 
 
 @mock.patch.dict(os.environ, {"FUNNEL_LLM_TRANSITIONS": "true"})
+class TestStructuredQuestionVerbatim:
+    """El resumen de datos NUNCA se reformula (conv 176: la reescritura 'válida'
+    entregó la pregunta de confirmación SIN la lista de datos).
+
+    El resumen se construye con el builder REAL (build_funnel_summary) sobre datos
+    arbitrarios: el guard detecta el esqueleto estructural del sistema, no un
+    literal, así que candidato/datos distintos dan el mismo comportamiento.
+    """
+
+    def test_summary_question_returns_fallback_for_any_candidate_data(self):
+        candidates = [
+            {"candidate.name": "Juan Raul Ramos", "candidate.city": "Guadalajara",
+             "experience.vehicle_type": "full", "license.category": "E"},
+            {"candidate.name": "María Zúñiga", "candidate.city": "Torreón",
+             "experience.vehicle_type": "sencillo", "license.category": "B",
+             "experience.years": "8"},
+        ]
+        for facts in candidates:
+            summary_q = CT.build_funnel_summary(facts)
+            fb = f"Gracias.\n\n{summary_q}"
+            with mock.patch("app.gemini_client.dispatch_generation") as m:
+                out = _call(question=summary_q, fallback=fb)
+            assert out == fb, f"resumen reformulado para {facts.get('candidate.name')}"
+            m.assert_not_called()
+
+    def test_bulleted_content_returns_fallback_without_llm_call(self):
+        # Cualquier pregunta con viñetas de datos porta contenido estructurado,
+        # aunque no sea el resumen canónico completo.
+        q = f"Le leo lo que tengo:{CT.SUMMARY_BULLET}Licencia: E{CT.SUMMARY_BULLET}Experiencia: 15\n¿Está bien?"
+        with mock.patch("app.gemini_client.dispatch_generation") as m:
+            out = _call(question=q, fallback="FB")
+        assert out == "FB"
+        m.assert_not_called()
+
+    def test_atomic_question_still_reformulated(self):
+        with mock.patch(
+            "app.gemini_client.dispatch_generation",
+            return_value="Va, gracias. ¿Me podría indicar su ciudad?",
+        ) as m:
+            out = _call()
+        assert out == "Va, gracias. ¿Me podría indicar su ciudad?"
+        m.assert_called_once()
+
+    def test_guard_markers_are_the_builders_markers(self):
+        # Regresión de fuente única: si alguien cambia la redacción del resumen en
+        # build_funnel_summary sin tocar las constantes, esta prueba truena antes
+        # de que el guard quede ciego en producción.
+        summary = CT.build_funnel_summary({"candidate.name": "X", "candidate.city": "Y"})
+        assert CT.SUMMARY_HEADER in summary
+        assert CT.SUMMARY_BULLET in summary
+
+
+@mock.patch.dict(os.environ, {"FUNNEL_LLM_TRANSITIONS": "true"})
 class TestGeneratedPrimary:
     def test_generated_reply_is_used(self):
         generated = "Qué buen recorrido trae. ¿En qué ciudad se encuentra ahorita?"
