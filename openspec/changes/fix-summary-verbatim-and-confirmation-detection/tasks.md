@@ -41,9 +41,12 @@
 ## 4. Verificación y despliegue
 
 - [x] 4.1 Suite completa en verde → 965 passed, 63 deselected (958 + 7 nuevos).
-- [ ] 4.2 Commit + build + force-recreate + push; verificar el código nuevo en la imagen
-      corriendo.
-- [ ] 4.3 Verificación en vivo: perfil completo en un mensaje → el resumen llega COMPLETO
-      con la lista de datos; responder "sí + pregunta de negocio" → pregunta respondida,
-      `funnel.summary_confirmed` en BD y el turno siguiente avanza (no re-emite resumen);
-      pregunta de doping mid-funnel → respuesta sin coletilla de horario.
+- [x] 4.2 Commit `c5092b3` + build + force-recreate (api/worker/beat) + push a
+      origin/feat/turn-decision-phase1. Verificado en hr_worker: SUMMARY_BULLET,
+      captura [-2000:] y "son correctos" presentes en la imagen corriendo.
+- [x] 4.3 Verificación en vivo (conv 177, 2026-07-13): resumen entregado COMPLETO
+      verbatim ("De acuerdo.\n\n¡Listo! Antes de continuar, le confirmo sus datos…",
+      339 chars con lista); "Si, todo bien, ¿Hacen dopong?" → doping respondido (519
+      chars, sin coletilla — "8:00" ausente en logs), `[SUMMARY_CONFIRM_COMPOUND]`
+      disparado y `funnel.summary_confirmed=true` en BD con
+      source=summary_confirm_compound; cero "omitido por error".
