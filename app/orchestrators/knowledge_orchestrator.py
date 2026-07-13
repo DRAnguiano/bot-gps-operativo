@@ -1769,6 +1769,29 @@ def _build_funnel_nudge(
         except Exception as exc:
             log.warning("[FUNNEL_NUDGE] extracción de hechos falló, nudge puede ser impreciso: %s", exc)
 
+    # Consumo MISMO-TURNO de la confirmación del resumen (conv 177): la persistencia
+    # ocurre en el worker después de componer, así que sin este merge el nudge se
+    # arma con facts pre-turno y re-emite el resumen que el candidato acaba de
+    # confirmar. Mismo detector que gobierna la persistencia (una sola semántica);
+    # SOLO se mergea funnel.summary_confirmed — otras inferencias de contexto no
+    # entran al nudge por esta vía.
+    try:
+        from app.knowledge.current_turn import _extract_context_confirmation_facts
+
+        _last_bot_raw = ""
+        for _m in reversed(lead_memory.get("messages") or []):
+            if isinstance(_m, dict) and _m.get("role") == "assistant":
+                _last_bot_raw = str(_m.get("message") or "")
+                break
+        if _last_bot_raw:
+            _ctx = _extract_context_confirmation_facts(
+                normalize_text(message), _last_bot_raw, _turn_signals=turn_signals,
+            )
+            if _ctx.get("funnel.summary_confirmed") == "true":
+                active_facts["funnel.summary_confirmed"] = "true"
+    except Exception as exc:
+        log.warning("[FUNNEL_NUDGE] detección de confirmación mismo-turno falló: %s", exc)
+
     # 3.3: vencido sin trámite → no emitir más nudges
     if active_facts.get("funnel.status") == "vencido_sin_tramite":
         return None, []

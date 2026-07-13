@@ -133,6 +133,77 @@ class TestReencauceScopeRegression:
         assert "facts=_reencauce_facts" in src
 
 
+class TestSameTurnConfirmationConsumption:
+    """conv 177: la confirmación se persistía pero el MISMO turno re-emitía el
+    resumen recién confirmado — el nudge se componía con facts pre-turno. El merge
+    en _build_funnel_nudge consume la confirmación detectada en el turno."""
+
+    _COMPLETE_FACTS = {
+        "candidate.name": "María Zúñiga", "candidate.city": "Torreón",
+        "candidate.age": "38", "experience.vehicle_type": "sencillo",
+        "experience.years": "8", "license.category": "E",
+        "license.expiration_text": "dos años",
+        "medical.apto_expiration_text": "dos años",
+        "documents.proof": "cartas", "documents.labor_letters_status": "disponibles",
+    }
+
+    def _nudge(self, message: str, bot_message: str, facts: dict | None = None):
+        from app.orchestrators.knowledge_orchestrator import _build_funnel_nudge
+        base = facts if facts is not None else self._COMPLETE_FACTS
+        lead_memory = {
+            "lead": {"lead_key": "chatwoot:test"},
+            "facts": [
+                {"fact_group": k.split(".")[0], "fact_key": k.split(".")[1],
+                 "fact_value": v}
+                for k, v in base.items()
+            ],
+            "messages": [{"role": "assistant", "message": bot_message}],
+        }
+        contract = {"intent": "candidate_profile_signal", "route": "profile",
+                    "business_signals": [], "requires_human": False}
+        q, _keys = _build_funnel_nudge(
+            message, contract, lead_memory,
+            turn_signals=TurnIntentSignals(), pre_validated_facts=[],
+        )
+        return q
+
+    def test_compound_affirmation_advances_past_summary_same_turn(self):
+        from app.knowledge.current_turn import SUMMARY_HEADER, build_funnel_summary
+        bot = ("Sí, contamos con esa prestación desde el primer día.\n\n"
+               + build_funnel_summary(self._COMPLETE_FACTS))
+        # Premisa: SIN confirmación, el nudge re-emitiría el resumen.
+        assert SUMMARY_HEADER in (self._nudge("¿me pagan seguro?", bot) or "")
+        # Con afirmación compuesta el mismo turno avanza al cierre.
+        q = self._nudge("si, todo bien, ¿hacen antidoping?", bot)
+        assert q is not None
+        assert SUMMARY_HEADER not in q
+
+    def test_negation_keeps_current_behavior(self):
+        from app.knowledge.current_turn import SUMMARY_HEADER, build_funnel_summary
+        bot = build_funnel_summary(self._COMPLETE_FACTS)
+        q = self._nudge("no, la ciudad esta mal", bot)
+        assert SUMMARY_HEADER in (q or "")
+
+    def test_merge_is_scoped_to_summary_confirmed_only(self):
+        # El detector de contexto puede inferir otras claves; SOLO
+        # funnel.summary_confirmed debe entrar al nudge por esta vía. Escenario
+        # sin handlers existentes (la pregunta de ciudad no tiene inferencia por
+        # afirmación): si candidate.city se colara desde el mock, el paso se
+        # daría por contestado y el nudge saltaría al resumen.
+        from unittest import mock
+        from app.knowledge.current_turn import SUMMARY_HEADER
+        facts = dict(self._COMPLETE_FACTS)
+        del facts["candidate.city"]  # paso pendiente
+        with mock.patch(
+            "app.knowledge.current_turn._extract_context_confirmation_facts",
+            return_value={"candidate.city": "Torreón"},
+        ):
+            q = self._nudge("ok", "¿En qué ciudad se encuentra actualmente?", facts)
+        assert q is not None
+        assert "ciudad" in q.lower()
+        assert SUMMARY_HEADER not in q
+
+
 class TestTransitionVoiceInstruction:
     def test_prompt_pins_first_person_singular_usted(self):
         import os
