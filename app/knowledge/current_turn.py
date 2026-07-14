@@ -374,6 +374,33 @@ def canonicalize_proof(value: Any) -> str | None:
     return None
 
 
+# Números en palabras dentro de expresiones de DURACIÓN (uno–doce; las vigencias
+# reales son cortas). Formalidad en resumen/nota: "dos años" → "2 años"
+# (feedback usuario 2026-07-13, conv 178). Solo formato — no interpreta fechas.
+_DURATION_WORD_NUMS = {
+    "un": "1", "una": "1", "uno": "1", "dos": "2", "tres": "3", "cuatro": "4",
+    "cinco": "5", "seis": "6", "siete": "7", "ocho": "8", "nueve": "9",
+    "diez": "10", "once": "11", "doce": "12",
+}
+_DURATION_PATTERN = re.compile(
+    r"\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    r"\s+(años?|mes(?:es)?|semanas?|d[ií]as?)\b",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_duration_digits(value: Any) -> str:
+    """Reemplaza números en palabras por dígitos SOLO dentro del patrón de
+    duración ("dos años" → "2 años"). Fechas ("31 de diciembre de 2027") y
+    textos sin patrón ("vencido") pasan intactos."""
+    text = str(value or "")
+    if not text:
+        return text
+    return _DURATION_PATTERN.sub(
+        lambda m: f"{_DURATION_WORD_NUMS[m.group(1).lower()]} {m.group(2)}", text,
+    )
+
+
 # Detect the topic of the last bot question for context-aware "si" interpretation
 # Señal estructural de pregunta cuantitativa embebida: "cuántas necesita",
 # "cuánto pagan", etc. OR-fallback para cuando TIPC no clasifica has_embedded_question.

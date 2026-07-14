@@ -340,6 +340,12 @@ def extract_turn(
             del fields["documents.proof"]  # no mapeable → no persistir texto crudo
         else:
             fields["documents.proof"].value = _proof_canon
+    # Vigencias: números en palabras → dígitos ("dos años" → "2 años"); mismo
+    # chokepoint que proof para que TODA persistencia salga ya normalizada.
+    for _exp_key in ("license.expiration_text", "medical.apto_expiration_text"):
+        if _exp_key in fields and fields[_exp_key].value:
+            from app.knowledge.current_turn import canonicalize_duration_digits
+            fields[_exp_key].value = canonicalize_duration_digits(fields[_exp_key].value)
     # Vigencia enunciada por el candidato: si el mensaje trae un marcador de
     # vencimiento, marca la vigencia como explícita para que D3 no la descarte
     # cuando se ofrece antes de preguntarla (volunteered-expiration-extraction).

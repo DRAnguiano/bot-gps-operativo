@@ -1565,6 +1565,7 @@ async def chatwoot_webhook(
                 conversation_id=conversation_id,
                 fallback_last_message=content,
                 channel_label=channel_label,
+                current_risk_level=str(result.get("risk_level") or "low"),
             )
             labels = note_sync.get("labels") or []
             labels_applied = bool(note_sync.get("ok"))

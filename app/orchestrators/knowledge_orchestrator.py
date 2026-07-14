@@ -244,12 +244,27 @@ def _generate_situated_reply(situation: str, fallback: str, *, max_tokens: int =
         from app.persona_config import SYSTEM_PROMPT
         prompt = (
             f"{situation} Responde en 1-2 frases, cálido y natural (mexicano norteño), "
-            "sin preguntas, sin prometer contratación ni inventar datos o cifras."
+            "sin preguntas, sin prometer contratación ni inventar datos o cifras. "
+            "Trata de usted en singular — nunca tutees ni uses plural corporativo "
+            "(\"indicarnos\", \"necesitamos\")."
         )
         out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.5, max_tokens=max_tokens) or "").strip()
         return out or fallback
     except Exception:
         return fallback
+
+
+def _join_with_nudge(reply: str, nudge: str) -> str:
+    """Une respuesta + pregunta del funnel garantizando UNA sola instancia de la
+    pregunta (conv 178: el join apilaba fragmentos y re-adjuntaba la pregunta ya
+    contenida). Igualdad normalizada — conservador: solo dedupe exacto."""
+    if not nudge:
+        return reply
+    if not reply:
+        return nudge
+    if normalize_text(nudge) in normalize_text(reply):
+        return reply
+    return f"{reply}\n\n{nudge}"
 
 
 def _controlled_reply_from_contract(contract: dict[str, Any]) -> str:
@@ -268,7 +283,15 @@ def _controlled_reply_from_contract(contract: dict[str, Any]) -> str:
     if contract.get("requires_clarification"):
         return CONTROLLED_CLARIFICATION_REPLY
     if contract.get("requires_human"):
-        return "Ese punto debe revisarlo nuestro equipo antes de continuar. Lo dejo anotado para seguimiento."
+        # Acuse situado (D8): el enlatado queda solo como degradación. El LLM
+        # reconoce lo que el candidato dijo en vez de soltar una derivación seca.
+        return _generate_situated_reply(
+            "El candidato tocó un tema que debe revisar nuestro equipo humano antes "
+            "de continuar. Reconoce con respeto lo que compartió y dile que ese punto "
+            "lo revisa nuestro equipo y le damos seguimiento — sin juzgarlo, sin "
+            "confirmar ni descartar su continuidad.",
+            fallback="Ese punto debe revisarlo nuestro equipo antes de continuar. Lo dejo anotado para seguimiento.",
+        )
     return CONTROLLED_FALLBACK_REPLY
 
 
@@ -1094,6 +1117,8 @@ Reglas:
 - Si no hay nombre disponible, omite el vocativo; no uses placeholders como "[nombre]".
 - NUNCA inventes mínimos de años, sueldos, ni condiciones que no se hayan mencionado.
 - NUNCA prometas la vacante ni uses "Capital Humano" como tercero; usa "nuestro equipo".
+- Trata de usted en singular — nunca tutees ("tu expediente", "avísanos") ni uses
+  plural corporativo.
 - Máximo 3 oraciones. Sin preguntas al final.
 
 Contexto del lead: {memory_text}
@@ -2347,15 +2372,15 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                 }
                 reply = generate_funnel_transition_reply(
                     message, _fresh_r1, nudge,
-                    fallback="\n\n".join(p for p in (_r1_ack, nudge) if p),
+                    fallback=_join_with_nudge(_r1_ack or "", nudge),
                 )
             else:
-                _parts = [p for p in (_r1_ack, _rag_ans, nudge) if p]
-                reply = "\n\n".join(_parts) if _parts else (_r1_ack or "")
+                _base = "\n\n".join(p for p in (_r1_ack, _rag_ans) if p)
+                reply = _join_with_nudge(_base, nudge) if (_base or nudge) else (_r1_ack or "")
         elif _objection_fired:
             # Acuse empático ya está en reply; agregar siguiente pregunta del funnel si hay
             if nudge:
-                reply = f"{reply}\n\n{nudge}"
+                reply = _join_with_nudge(reply, nudge)
             # Si no hay nudge, el acuse es la respuesta completa (perfil avanza al cierre)
         elif nudge:
             # 3.2: puente suave si el RAG respondió una duda en el primer turno (sin nombre aún)
@@ -2376,10 +2401,10 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                     for _f in (_pre_validated or []) if _f.get("fact_value") is not None
                 }
                 reply = generate_funnel_transition_reply(
-                    message, _fresh_now, nudge, fallback=f"{reply}\n\n{nudge}",
+                    message, _fresh_now, nudge, fallback=_join_with_nudge(reply, nudge),
                 )
             else:
-                reply = f"{reply}\n\n{nudge}"
+                reply = _join_with_nudge(reply, nudge)
         else:
             asked_field_keys = []  # no nudge appended → no field was asked
             if profile_ack_used:
@@ -2402,7 +2427,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                 _next_q = next_question_from_missing_facts(_merged_ack)
                 if _next_q:
                     reply = generate_funnel_transition_reply(
-                        message, _fresh_ack, _next_q, fallback=f"{reply}\n\n{_next_q}",
+                        message, _fresh_ack, _next_q, fallback=_join_with_nudge(reply, _next_q),
                     )
 
     # Guard de léxico de vigencia sobre la respuesta final (todas las rutas): el bot

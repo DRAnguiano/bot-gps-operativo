@@ -86,7 +86,11 @@ INTENTS DE PREGUNTA (van en "questions"):
 - vacancy_question: "¿qué vacantes hay?", info de la vacante de operador.
 - safety_intent: antidoping, sustancias, pruebas. Pon is_admission=true SOLO si el
   candidato ADMITE consumo o un positivo ("salí positivo", "antes consumía"). Si solo
-  pregunta ("¿hacen antidoping?"), is_admission=false.
+  pregunta ("¿hacen antidoping?"), is_admission=false. OJO con coloquialismos: el
+  habla norteña usa expresiones como "se arma", "el show", "deme chance", "está la
+  onda" SIN relación con sustancias — "le mando fotos de mis tractos y todo el show
+  pa que vea que sí se arma" es entusiasmo por demostrar experiencia, NO safety_intent
+  ni admisión. safety_intent exige referencia real a sustancias/alcohol/pruebas.
 
 INTENTS DE SEÑAL (van en "primary_intent"/"secondary_intents", NO generan questions):
 - greeting: saludo. farewell: despedida. on_route: va manejando/ocupado.
@@ -168,6 +172,9 @@ Mensaje: "10-4 voy en ruta al rato le marco"
 
 Mensaje: "antes consumia pero ya cambie"
 {"message_type":"simple","primary_intent":"safety_intent","secondary_intents":[],"answers":[],"questions":[{"intent":"safety_intent","evidence":"antes consumia","is_admission":true}]}
+
+Mensaje: "no tengo eso, pero si kiere le mando fotos de mis tractos y todo el show pa k vea que si se arma"
+{"message_type":"simple","primary_intent":"candidate_answer","secondary_intents":[],"answers":[{"field":"documents.proof","value":"ninguno","evidence":"no tengo eso","confidence":0.85}],"questions":[]}
 
 Mensaje: "tienen vacantes de mecanico?"
 {"message_type":"simple","primary_intent":"out_of_scope","secondary_intents":[],"answers":[],"questions":[]}

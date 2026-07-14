@@ -938,6 +938,7 @@ def process_chatwoot_debounced_message(
                     conversation_id=conversation_id,
                     fallback_last_message=combined_content,
                     channel_label=channel_label,
+                    current_risk_level=str(result.get("risk_level") or "low"),
                 )
             )
 

@@ -586,7 +586,7 @@ def _next_action_dinamica(facts: dict[str, str], is_local: bool, labels: list[st
     return "Validar traslado, documentos y continuidad del proceso."
 
 
-def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_last_message: str | None = None, channel_label: str | None = None) -> str:
+def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_last_message: str | None = None, channel_label: str | None = None, current_risk_level: str | None = None) -> str:
     lead = context.get("lead") or {}
     conversation = context.get("conversation") or {}
     facts = context.get("facts") or {}
@@ -639,7 +639,15 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
 
     requires_human_bool = bool(lead.get("requires_human"))
     requiere_agente = "Sí" if requires_human_bool else "No"
-    riesgo_alto = "riesgo_alto" in lbl
+    # La NOTA de riesgo refleja el TURNO actual, no el risk_level pegado del lead
+    # (conv 178: un falso positivo dejó al lead en high y 3 turnos low siguieron
+    # emitiendo nota de riesgo). El label riesgo_alto de la conversación sí queda
+    # como marca histórica. Sin señal del turno (callers legacy), se conserva el
+    # comportamiento por label.
+    if current_risk_level is not None:
+        riesgo_alto = current_risk_level.lower() == "high"
+    else:
+        riesgo_alto = "riesgo_alto" in lbl
 
     # 📞 Llamada (mantener si solicitó llamada)
     llamada_block = ""
@@ -736,8 +744,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             "Conversación con señal de riesgo detectada. Requiere revisión humana.\n\n"
             "👥 Para Capital Humano\n"
             "Revisar historial de mensajes y determinar continuidad del proceso.\n"
-            "Requiere Agente: Sí\n"
-            "⚠️ Riesgo: Alto\n\n"
+            "Requiere Agente: Sí\n\n"
             "⏭️ Siguiente acción\n"
             "Revisar conversación completa antes de continuar."
         )
@@ -907,13 +914,13 @@ async def _chatwoot_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
         return response.json()
 
 
-async def sync_chatwoot_candidate_note(*, lead_key: str, account_id: int | str, conversation_id: int | str, fallback_last_message: str | None = None, channel_label: str | None = None) -> dict[str, Any]:
+async def sync_chatwoot_candidate_note(*, lead_key: str, account_id: int | str, conversation_id: int | str, fallback_last_message: str | None = None, channel_label: str | None = None, current_risk_level: str | None = None) -> dict[str, Any]:
     context = get_lead_note_context(lead_key)
     if not context.get("lead"):
         return {"ok": False, "skipped": True, "reason": "lead_not_found", "lead_key": lead_key}
 
     labels = calculate_candidate_labels(context)
-    note = render_candidate_note(context, labels, fallback_last_message=fallback_last_message, channel_label=channel_label)
+    note = render_candidate_note(context, labels, fallback_last_message=fallback_last_message, channel_label=channel_label, current_risk_level=current_risk_level)
 
     note_response = await _chatwoot_post(
         f"/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages",
