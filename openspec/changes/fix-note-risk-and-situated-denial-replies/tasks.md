@@ -44,8 +44,10 @@
 ## 5. Verificación y despliegue
 
 - [x] 5.1 Suite completa en verde (`-m "not external_llm"`): 982 passed, 63 deselected (2026-07-13).
-- [ ] 5.2 Commit + build + force-recreate + push; verificar el código nuevo en la
-      imagen corriendo.
+- [x] 5.2 Commit + build + force-recreate + push; verificar el código nuevo en la
+      imagen corriendo. Commit 7aff64a pusheado; api/worker/beat recreados;
+      verificado en hr_rag_api: _join_with_nudge, canonicalize_duration_digits,
+      current_risk_level, "se arma" presentes y "Riesgo: Alto" ausente.
 - [ ] 5.3 Verificación en vivo (WhatsApp): funnel con "se arma"/coloquialismos → sin
       nota de riesgo; vigencia dicha en palabras → resumen y nota con dígitos;
       denegación de documento → un acuse natural + una pregunta, sin fragmentos.
