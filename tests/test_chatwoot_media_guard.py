@@ -122,6 +122,30 @@ def test_classify_attachment_audio():
     assert _classify_attachment(p) == "audio"
 
 
+def test_classify_attachment_audio_by_content_type():
+    from app.app import _classify_attachment, _detect_audio_attachment
+    p = _payload(attachments=[{
+        "file_type": "file",
+        "data_url": "http://x/active-storage/blob",
+        "content_type": "audio/ogg",
+    }])
+    assert _classify_attachment(p) == "audio"
+    assert _detect_audio_attachment(p) == ("http://x/active-storage/blob", "audio/ogg")
+
+
+def test_classify_attachment_audio_by_voice_filetype():
+    from app.app import _classify_attachment
+    p = _payload(attachments=[{"file_type": "voice", "data_url": "http://x/blob"}])
+    assert _classify_attachment(p) == "audio"
+
+
+def test_classify_attachment_audio_by_extension():
+    from app.app import _classify_attachment, _detect_audio_attachment
+    p = _payload(attachments=[{"file_type": "file", "data_url": "http://x/audio.oga"}])
+    assert _classify_attachment(p) == "audio"
+    assert _detect_audio_attachment(p) == ("http://x/audio.oga", "audio/ogg")
+
+
 def test_classify_attachment_image():
     from app.app import _classify_attachment
     p = _payload(attachments=[{"file_type": "image", "data_url": "http://x/img.jpg"}])
@@ -147,81 +171,23 @@ def test_classify_attachment_none():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6.2 — Unit: call_groq_vision fallback de clave en RateLimitError
+# 6.2 — Unit: visión Gemini degrada a media_guard contract
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_call_groq_vision_fallback_on_rate_limit(monkeypatch):
-    """call_groq_vision usa BACKUP cuando la primaria devuelve RateLimitError."""
-    from groq import RateLimitError as GroqRateLimitError
-    import app.indexer as IDX
+def test_dispatch_vision_rate_limit_returns_empty(monkeypatch):
+    """Visión Gemini-único: 429 devuelve '' y el webhook aplica media_guard."""
+    import app.gemini_client as GC
 
-    primary_called = {"n": 0}
-    backup_called = {"n": 0}
+    class FakeResp:
+        status_code = 429
+        text = "rate limit"
 
-    def fake_call(key, *a, **kw):
-        if key == "primary":
-            primary_called["n"] += 1
-            # Simular RateLimitError de Groq
-            resp_mock = MagicMock()
-            resp_mock.status_code = 429
-            resp_mock.headers = {}
-            resp_mock.text = "rate limit"
-            raise GroqRateLimitError(message="rate limit", response=resp_mock, body={})
-        backup_called["n"] += 1
-        return "licencia tipo E"
+        def json(self):
+            return {}
 
-    monkeypatch.setenv("GROQ_API_KEY", "primary")
-    monkeypatch.setenv("GROQ_API_KEY_BACKUP", "backup")
-
-    with patch.object(IDX, "_groq_call", side_effect=fake_call):
-        # call_groq_vision no usa _groq_call directamente — tiene su propio _call interno
-        # Mockeamos en el nivel correcto: Groq.chat.completions.create
-        pass
-
-    # Test real: mockeamos httpx.Client y Groq a nivel de instancia
-    from unittest.mock import patch as upatch
-    call_count = {"n": 0}
-
-    class FakeChoice:
-        class message:
-            content = "licencia tipo E"
-
-    class FakeCompletion:
-        choices = [FakeChoice()]
-
-    class FakeGroq:
-        def __init__(self, api_key, **kw):
-            self.api_key = api_key
-
-        class chat:
-            class completions:
-                @staticmethod
-                def create(**kw):
-                    pass  # overridden per-instance
-
-        def __init__(self, api_key, **kw):
-            self.api_key = api_key
-            self.chat = MagicMock()
-            if api_key == "primary_rl":
-                resp_mock = MagicMock()
-                resp_mock.status_code = 429
-                resp_mock.headers = {}
-                resp_mock.text = "rate limit"
-                self.chat.completions.create.side_effect = GroqRateLimitError(
-                    message="rate limit", response=resp_mock, body={}
-                )
-            else:
-                self.chat.completions.create.return_value = FakeCompletion()
-
-    monkeypatch.setenv("GROQ_API_KEY", "primary_rl")
-    monkeypatch.setenv("GROQ_API_KEY_BACKUP", "backup_ok")
-    monkeypatch.delenv("GROQ_API_KEY_ORG2", raising=False)
-
-    import app.indexer as IDX2
-    with upatch("app.indexer.Groq", FakeGroq):
-        result = IDX2.call_groq_vision(b"\x89PNG\r\n", is_sticker=False)
-
-    assert result == "licencia tipo E"
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    with patch("httpx.post", return_value=FakeResp()):
+        assert GC.dispatch_vision(b"\x89PNG\r\n", "clasifica") == ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,8 +204,10 @@ def test_image_with_funnel_data_enqueues(client, monkeypatch, channel_type):
     async def fake_vision_download(*a, **kw):
         pass
 
-    # Mock de call_groq_vision para devolver un dato de funnel
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "licencia tipo E")
+    # dispatch_vision (gemini-natural-recruiter B4) reemplazó la llamada directa a
+    # call_groq_vision en app.py; se mockea en el punto de llamada real.
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "licencia tipo E")
 
     # Mock de descarga HTTP dentro del webhook
     class FakeResp:
@@ -282,7 +250,8 @@ def test_sticker_intent_enqueues(client, monkeypatch, channel_type):
 
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "afirmativo")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "afirmativo")
 
     class FakeResp:
         content = b"RIFF"  # bytes mínimos webp-like
@@ -324,7 +293,8 @@ def test_image_sticker_vision_fails_media_guard(client, monkeypatch, att):
 
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "")
 
     class FakeResp:
         content = b"\x00"
@@ -427,7 +397,8 @@ def test_debounce_on_image_vision_success(client, monkeypatch):
     monkeypatch.setenv("INBOUND_DEBOUNCE_ENABLED", "true")
     c, sent, called = client
 
-    monkeypatch.setattr(A, "call_groq_vision", lambda *a, **kw: "licencia tipo E")
+    import app.gemini_client as GC
+    monkeypatch.setattr(GC, "dispatch_vision", lambda *a, **kw: "licencia tipo E")
 
     class FakeResp:
         content = b"\xff\xd8\xff"

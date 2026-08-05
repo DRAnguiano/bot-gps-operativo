@@ -347,7 +347,16 @@ def process_chatwoot_debounced_message(
                 "channel_user_id": channel_user_id,
                 "batch_size": len(messages),
                 "external_message_id": external_message_id,
-                "combined_content": combined_content[:500],
+                # Privacidad (expediente B2): si el lote trae un documento, los datos
+                # extraídos por visión NO se loggean en claro; solo el tipo.
+                "combined_content": (
+                    "[documento: " + ", ".join(
+                        str((it.get("vision_doc") or {}).get("tipo")) for it in messages
+                        if it.get("vision_doc")
+                    ) + "]"
+                    if any(it.get("vision_doc") for it in messages)
+                    else combined_content[:500]
+                ),
             },
             ensure_ascii=False,
         ),
@@ -369,8 +378,8 @@ def process_chatwoot_debounced_message(
         from app.graphs.hr_graph import run_hr_graph_message
         from app.knowledge.current_turn import (
             build_current_turn_ack,
+            has_business_question,
             is_campaign_or_interest_entry,
-            is_question,
         )
         from app.chatwoot_note_sync import sync_chatwoot_candidate_note
         from app.lead_memory.repository import get_lead_memory
@@ -381,8 +390,112 @@ def process_chatwoot_debounced_message(
         last_bot_message = None
         for _m in reversed(pre_memory.get("messages") or []):
             if isinstance(_m, dict) and _m.get("role") == "assistant":
-                last_bot_message = str(_m.get("message") or "")[:500]
+                # Cola, no cabeza: la pregunta vigente vive al FINAL del mensaje.
+                # El [:500] original dejó ciego al detector de confirmación cuando
+                # el resumen iba al final de una respuesta de 1027 chars (conv 176).
+                last_bot_message = str(_m.get("message") or "")[-2000:]
                 break
+
+        # ── Bloque 4: guardia de insistencia — si el lead está en pausa (tras 5 ruegos
+        # sin dato válido), NO se procesa ni responde (suppress), SIN gastar LLM. El
+        # avance del perfil ya está preservado en facts; pasada la hora, el siguiente
+        # mensaje reanuda normal desde donde quedó. ──────────────────────────────────
+        from app.knowledge.insistence_guard import is_paused as _ig_is_paused
+        _pause_lead_key = (pre_memory.get("lead") or {}).get("lead_key") or conversation_key_for_facts
+        if _ig_is_paused(_pause_lead_key):
+            import logging as _lg
+            _lg.getLogger(__name__).info(
+                "[INSISTENCE_PAUSED_SUPPRESS] lead=%s conv=%s — sin respuesta (pausa activa)",
+                _pause_lead_key, conversation_id,
+            )
+            return {
+                "status": "ok",
+                "processed": False,
+                "sent_to_chatwoot": False,
+                "batch_size": len(messages),
+                "combined_content": combined_content,
+                "reason": "insistence_paused",
+            }
+
+        # ── Bloque 4b: anti-spam / flood sostenido. El debounce ya coalesce ráfagas
+        # <6s; aquí se corta el flood sostenido (muchos turnos separados) con un
+        # cooldown por lead, SIN gastar LLM. Agnóstico de contenido. ────────────────
+        from app.knowledge import anti_spam
+        if anti_spam.is_flood_cooldown(_pause_lead_key) or anti_spam.register_and_check(_pause_lead_key):
+            import logging as _lg2
+            _lg2.getLogger(__name__).warning(
+                "[ANTISPAM_SUPPRESS] lead=%s conv=%s — flood/cooldown, sin respuesta",
+                _pause_lead_key, conversation_id,
+            )
+            return {
+                "status": "ok",
+                "processed": False,
+                "sent_to_chatwoot": False,
+                "batch_size": len(messages),
+                "combined_content": combined_content,
+                "reason": "antispam_flood",
+            }
+
+        # ── Expediente B2 (privacidad): consentimiento expreso del apto médico. ─────
+        # El apto es dato sensible de salud (LFPDPPP): si estaba pendiente el "sí
+        # acepto" y este mensaje lo afirma, se registra y se invita a reenviar la foto.
+        from app.lead_memory import expediente as _exp
+        _known_pre = {
+            f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+            for r in (pre_memory.get("facts") or []) if r.get("fact_value")
+        }
+        if _exp.apto_consent_pending(_known_pre) and _exp.is_consent_affirmative(combined_content):
+            _exp.register_express_consent(_pause_lead_key)
+            _consent_reply = (
+                "Gracias por su autorización ✓. Puede enviarnos la foto de su apto "
+                "médico cuando guste y seguimos con su expediente."
+            )
+            try:
+                asyncio.run(_send_chatwoot_message(
+                    account_id=account_id, conversation_id=conversation_id,
+                    content=_consent_reply,
+                ))
+            except Exception:
+                traceback.print_exc()
+            return {
+                "status": "ok", "processed": True, "sent_to_chatwoot": True,
+                "batch_size": len(messages), "combined_content": combined_content,
+                "reason": "apto_consent_registered",
+            }
+
+        # ── Expediente (document-expediente-vision-v2 B1): registrar la recepción de
+        # documentos clasificados por visión ANTES del orquestador (así la Nota IA del
+        # turno ya los ve). La imagen nunca se persiste; solo estado + trazabilidad
+        # (source_message_id). El acuse se compone después del reply. ────────────────
+        _docs_received_now: list[str] = []
+        _docs_ilegible_now: list[str] = []
+        _apto_gate_fired = False
+        for _it in messages:
+            _vd = _it.get("vision_doc") or {}
+            _vd_tipo = _vd.get("tipo")
+            if not _vd_tipo:
+                continue
+            # B2 gate: el apto médico NO se registra ni se extrae sin consentimiento
+            # EXPRESO. Se pide la autorización y el resultado de visión se descarta
+            # (el contenido del turno se neutraliza para no persistir facts del apto).
+            if _vd_tipo == "apto_medico" and not _exp.has_express_consent(_known_pre):
+                _exp.request_apto_consent(_pause_lead_key)
+                _apto_gate_fired = True
+                combined_content = "[documento recibido]"
+                continue
+            _vd_legible = bool(_vd.get("legible", True))
+            if _exp.mark_received(_pause_lead_key, _vd_tipo, legible=_vd_legible):
+                (_docs_received_now if _vd_legible else _docs_ilegible_now).append(_vd_tipo)
+                try:
+                    from app.lead_memory.repository import upsert_lead_fact as _exp_up
+                    _exp_up(
+                        lead_key=_pause_lead_key, fact_group="expediente",
+                        fact_key=f"{_vd_tipo}.source_message_id",
+                        fact_value=str(_it.get("message_id") or ""),
+                        confidence=1.0, source="vision_document",
+                    )
+                except Exception:
+                    pass
 
         # ── 6.1: extracción única antes de bifurcar guard/orquestador ──────────
         from app.knowledge.turn_extractor import extract_turn, validate_extraction
@@ -492,19 +605,60 @@ def process_chatwoot_debounced_message(
             )
 
         # 6.3: guard usa facts pre-computados (sin re-extracción)
+        # funnel.summary_confirmed cuenta como señal: el "sí, es correcto" al resumen
+        # debe disparar el guard para persistir la confirmación y emitir el cierre.
         _has_profile_signal = any(
-            k.startswith(("candidate.", "license.", "medical.", "documents.", "experience."))
+            (k.startswith(("candidate.", "license.", "medical.", "documents.", "experience."))
+             or k == "funnel.summary_confirmed")
             and k not in {"candidate.vacancy_accepted"}
             for k in _current_turn_facts
         )
+        # Detector ÚNICO (Fase 2/D5): mismo que el orquestador. Sustituye la pareja
+        # `signals.has_embedded_question` + `is_question` que antes decidían por
+        # separado y en desacuerdo (raíz del bug #3). Si hay pregunta de negocio, el
+        # guard NO dispara y deja que el orquestador la responda.
         _guard_should_fire = (
             not first_contact_greeting
             and not result.get("requires_human")
-            and not _pre_extraction.signals.has_embedded_question
-            and not is_question(combined_content)
+            and not has_business_question(combined_content, _pre_extraction.signals)
             and _has_profile_signal
             and _current_turn_facts
         )
+        # fix-compound-summary-confirmation D1: la confirmación del resumen sobrevive
+        # a turnos compuestos. Cuando el guard NO dispara porque el mensaje trae
+        # pregunta de negocio ("Sí, todo bien... ¿hacen doping?"), el fact
+        # funnel.summary_confirmed ya computado por extract_current_turn_facts se
+        # persiste SOLO (sin tocar el reply — el orquestador responde la pregunta
+        # igual que hoy). Sin esto, el siguiente turno re-emite el resumen ya
+        # confirmado (bug en vivo conv 175, 2026-07-10).
+        if (
+            not _guard_should_fire
+            and _current_turn_facts.get("funnel.summary_confirmed") == "true"
+            and not result.get("requires_human")
+        ):
+            try:
+                _lm_confirm = get_lead_memory(conversation_key=conversation_key_for_facts)
+                _lk_confirm = (
+                    (_lm_confirm.get("lead") or {}).get("lead_key")
+                    or conversation_key_for_facts
+                )
+                from app.lead_memory.repository import upsert_lead_fact as _ulf_confirm
+                _ulf_confirm(
+                    lead_key=_lk_confirm,
+                    fact_group="funnel",
+                    fact_key="summary_confirmed",
+                    fact_value="true",
+                    confidence=0.95,
+                    source="summary_confirm_compound",
+                    source_text=combined_content[:200],
+                )
+                print(
+                    "[SUMMARY_CONFIRM_COMPOUND]",
+                    json.dumps({"lead_key": _lk_confirm, "conversation_id": conversation_id}, ensure_ascii=False),
+                    flush=True,
+                )
+            except Exception as _exc_confirm:
+                print(f"[SUMMARY_CONFIRM_COMPOUND] error: {_exc_confirm}", flush=True)
         if _guard_should_fire:
             lead_memory = get_lead_memory(conversation_key=conversation_key_for_facts)
             saved_facts = {
@@ -555,6 +709,8 @@ def process_chatwoot_debounced_message(
                     "documents.labor_letters",
                     "documents.renewal_proof",
                     "candidate.city",
+                    # Resumen de confirmación (gemini-natural-recruiter D6)
+                    "funnel.summary_confirmed",
                 }
                 context_new = {
                     k: v for k, v in _current_turn_facts.items()
@@ -643,10 +799,85 @@ def process_chatwoot_debounced_message(
                 flush=True,
             )
 
+        # ── Expediente B1: si este turno recibió documento(s), el reply es el ACUSE
+        # específico (nombra lo recibido + qué falta / pide re-toma si ilegible),
+        # no la respuesta genérica del pipeline. Datos deterministas del registro;
+        # redacción LLM con fallback. ────────────────────────────────────────────
+        if _docs_received_now or _docs_ilegible_now or _apto_gate_fired:
+            try:
+                _facts_now = dict(_known_pre)
+                for _t in _docs_received_now:
+                    _facts_now[f"expediente.{_t}.status"] = "recibido"
+                for _t in _docs_ilegible_now:
+                    _facts_now[f"expediente.{_t}.status"] = "ilegible"
+                if _apto_gate_fired:
+                    # B2: apto sin consentimiento expreso → pedir autorización (el
+                    # documento NO se registró; visión descartada).
+                    _acuse = _exp.CONSENT_APTO_REQUEST
+                else:
+                    _acuse = _exp.build_acuse(_facts_now, _docs_received_now, _docs_ilegible_now)
+                # B2: aviso de confidencialidad la PRIMERA vez que sube un documento.
+                if _acuse and not _exp.has_consent_notice(_known_pre):
+                    _acuse = f"{_acuse}\n\n{_exp.AVISO_CONFIDENCIALIDAD}"
+                    if not _apto_gate_fired:
+                        _exp.register_consent_notice(_pause_lead_key)
+                if _acuse:
+                    result["reply"] = _acuse
+                    import logging as _lg3
+                    _lg3.getLogger(__name__).info(
+                        "[EXPEDIENTE_ACUSE] lead=%s recibidos=%s ilegibles=%s apto_gate=%s",
+                        _pause_lead_key, _docs_received_now, _docs_ilegible_now, _apto_gate_fired,
+                    )
+            except Exception:
+                traceback.print_exc()
+
         reply = (result.get("reply") or result.get("text") or "").strip()
         reply = _maybe_prepend_first_reply_intro(
             reply, result, is_first_reply=(last_bot_message is None)
         )
+
+        # ── TURN_DECISION_SHADOW (fase 1/D1) ────────────────────────────────
+        # Read-only: construye TurnDecision equivalente y loggea divergencia
+        # entre el reply que vio el candidato y el que se persistió en memoria.
+        # No gobierna nada; solo evidencia los P0 (H1/H2) del auditor.
+        try:
+            from app.knowledge.turn_decision import TurnDecision
+            from app.knowledge.funnel_state_planner import compute_funnel_state, CanonicalFact
+
+            _persisted_reply = (result.get("reply") or result.get("text") or "").strip()
+            _delivered_reply = reply  # post-intro (lo que recibe el candidato)
+            _td_shadow = TurnDecision(
+                reply=_delivered_reply,
+                delivery_policy=(
+                    "suppress" if result.get("requires_human") and not result.get("human_handoff_ack")
+                    else "ack_then_handoff" if result.get("requires_human")
+                    else "send"
+                ),
+                requires_human=bool(result.get("requires_human")),
+                handoff_reason=result.get("intent") if result.get("requires_human") else None,
+                should_continue_profile=not result.get("requires_human", False),
+            )
+            _divergence = _persisted_reply != _delivered_reply
+            print(
+                "[TURN_DECISION_SHADOW]",
+                json.dumps(
+                    {
+                        "conversation_id": conversation_id,
+                        "delivery_policy": _td_shadow.delivery_policy,
+                        "reply_divergence": _divergence,
+                        "persisted_len": len(_persisted_reply),
+                        "delivered_len": len(_delivered_reply),
+                        "persisted_preview": _persisted_reply[:80],
+                        "delivered_preview": _delivered_reply[:80],
+                        "guard_applied": result.get("current_turn_guard_applied", False),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        except Exception as _e_shadow:
+            print("[TURN_DECISION_SHADOW_ERROR]", str(_e_shadow), flush=True)
+        # ── fin shadow ───────────────────────────────────────────────────────
 
         if not reply:
             return {
@@ -707,6 +938,7 @@ def process_chatwoot_debounced_message(
                     conversation_id=conversation_id,
                     fallback_last_message=combined_content,
                     channel_label=channel_label,
+                    current_risk_level=str(result.get("risk_level") or "low"),
                 )
             )
 

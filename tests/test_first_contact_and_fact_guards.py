@@ -20,6 +20,7 @@ import pytest
 import app.knowledge.current_turn as CT
 import app.orchestrators.knowledge_orchestrator as KO
 from app.lead_memory.profile_extractor import extract_profile_facts_as_dict
+from app.knowledge.turn_intent_classifier import TurnIntentSignals
 
 FB_ENTRY = "Me interesa la vacante de operador de quinta rueda"
 
@@ -114,11 +115,13 @@ class TestGeoDesdePreguntas:
 # ── 4. Captura de ciudad acotada ─────────────────────────────────────────────
 
 class TestCiudadAcotada:
-    def test_ciudad_no_se_traga_la_frase(self):  # FAILS hoy
+    @pytest.mark.external_llm
+    def test_ciudad_no_se_traga_la_frase(self):  # FAILS hoy (bug preexistente, no de esta migración)
         facts = extract_profile_facts_as_dict("soy de Laredo ahí de donde a donde me toca ir?")
         assert facts.get("candidate.city") == "Laredo"
 
-    def test_ciudad_corta_en_a_donde(self):  # FAILS hoy
+    @pytest.mark.external_llm
+    def test_ciudad_corta_en_a_donde(self):  # FAILS hoy (bug preexistente, no de esta migración)
         facts = extract_profile_facts_as_dict("soy de laredo a donde salen las corridas")
         assert facts.get("candidate.city") == "Laredo"
 
@@ -136,7 +139,7 @@ class TestCiudadAcotada:
         assert facts.get("candidate.city") == "Torreón"
 
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 # ── 5. Contrato A — normalize_text solo estructural; catálogo gestiona aliases ──
 
@@ -156,11 +159,13 @@ class TestTypoCanonicalizacion:
         from app.knowledge.text_normalizer import normalize_text
         assert normalize_text("licencia tipo d") == "licencia tipo d"
 
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — ciudad usa LLM T=0")
     def test_ciudad_con_typo_y_jerga(self):
         facts = extract_profile_facts_as_dict("soy d gomez palasio, que rutas ay?")
         assert facts.get("candidate.city") == "Gómez Palacio"
 
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — ciudad usa LLM T=0")
     def test_compuesto_jergoso_del_smoke(self):
         # Smoke 2026-06-12 12:15. license/apto con typos ("licensia","vijente")
@@ -213,23 +218,28 @@ JERGOSO = "soy d gomez palasio, que rutas ay y dan voleto pa ir a torreon"
 
 
 class TestPreguntaEmbebida:
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — has_embedded_business_question usa LLM T=0")
     def test_detecta_pregunta_sin_signos(self):
         assert CT.has_embedded_business_question(JERGOSO) is True
 
+    @pytest.mark.external_llm
     def test_guard_no_secuestra_el_turno(self):
         # El orquestador debe responder rutas/boleto; los facts se persisten igual.
+        # should_prioritize_current_turn llama has_embedded_business_question (LLM).
         assert CT.should_prioritize_current_turn(JERGOSO) is False
 
     def test_respuesta_pura_de_perfil_sigue_al_guard(self):
         assert CT.should_prioritize_current_turn("soy de torreon, licencia tipo e") is True
 
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — has_embedded_business_question usa LLM T=0")
     def test_dan_boleto_tambien_es_pregunta(self):
         assert CT.has_embedded_business_question("dan boleto para el traslado") is True
 
 
 class TestCiudadAncladaAResidencia:
+    @pytest.mark.external_llm
     def test_residencia_gana_sobre_destino(self):
         # "soy de gomez palacio ... para ir a torreon" → la residencia, no el destino.
         facts = extract_profile_facts_as_dict(JERGOSO)
@@ -310,6 +320,7 @@ PREGUNTA_ANIOS = "¿Cuántos años de experiencia tienes como operador?"
 
 
 class TestYaReclamoNoConfirma:
+    @pytest.mark.external_llm
     def test_ya_le_habia_dicho_no_confirma_apto(self):
         facts = CT.extract_current_turn_facts("Ya le habia dicho que 10 años", PREGUNTA_DOBLE_VIGENCIA)
         assert facts.get("medical.apto_status") != "vigente"
@@ -321,30 +332,48 @@ class TestYaReclamoNoConfirma:
 
 
 class TestAniosElipticos:
+    @pytest.mark.external_llm
     def test_numero_con_anos_tras_pregunta_de_experiencia(self):
-        facts = CT.extract_current_turn_facts("10 años", PREGUNTA_ANIOS)
+        # turn_signals inyectado evita classify_turn_intent, pero
+        # extract_current_turn_facts igual llama extract_profile_facts_as_dict (LLM).
+        facts = CT.extract_current_turn_facts(
+            "10 años", PREGUNTA_ANIOS, turn_signals=TurnIntentSignals(experience_context=True)
+        )
         assert facts.get("experience.years") == "10 años"
 
+    @pytest.mark.external_llm
     def test_numero_solo_tras_pregunta_de_experiencia(self):
-        facts = CT.extract_current_turn_facts("10", PREGUNTA_ANIOS)
+        # `turn_signals` inyectado determinista: en vivo esta señal la calcula
+        # classify_turn_intent (LLM); aquí se fija para no depender de una llamada
+        # real y no-determinista en el test.
+        facts = CT.extract_current_turn_facts(
+            "10", PREGUNTA_ANIOS, turn_signals=TurnIntentSignals(experience_context=True)
+        )
         assert facts.get("experience.years") == "10 años"
 
     def test_numero_sin_contexto_no_se_guarda(self):
-        facts = CT.extract_current_turn_facts("10", "¿En qué ciudad te encuentras actualmente?")
+        facts = CT.extract_current_turn_facts(
+            "10", "¿En qué ciudad te encuentras actualmente?",
+            turn_signals=TurnIntentSignals(experience_context=False),
+        )
         assert "experience.years" not in facts
 
     def test_numero_tras_pregunta_de_ciudad_no_es_experiencia(self):
-        facts = CT.extract_current_turn_facts("10 años", None)
+        facts = CT.extract_current_turn_facts(
+            "10 años", None, turn_signals=TurnIntentSignals(experience_context=False)
+        )
         assert "experience.years" not in facts
 
 
 class TestPreguntaDeCartas:
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — has_embedded_business_question usa LLM T=0")
     def test_cuantas_necesita_es_pregunta(self):
         assert CT.has_embedded_business_question(
             "Nada más tengo 1 si le sirve o cuantas nececita?"
         ) is True
 
+    @pytest.mark.external_llm
     @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — has_embedded_business_question usa LLM T=0")
     def test_cuantas_cartas_piden(self):
         assert CT.has_embedded_business_question("cuantas cartas piden") is True

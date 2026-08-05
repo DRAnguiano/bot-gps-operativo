@@ -57,54 +57,56 @@ def test_strip_leading_perfecto_recapitalizes_next_word():
 
 
 # ---------------------------------------------------------------------------
-# Integración por build_current_turn_ack (un solo "Perfecto")
+# Acuse del funnel sin eco de datos (feedback usuario 2026-07-03): un conector
+# breve y VARIADO + la siguiente pregunta del funnel — SIN repetir el valor del
+# dato recién aportado. Domain-level asserts (no copy literal): ver
+# openspec/specs/message-orchestration "Acuse del funnel sin eco de datos".
 # ---------------------------------------------------------------------------
 
-def test_ack_city_license_single_perfecto():
+def test_ack_uses_connector_and_next_question_no_echo():
     reply = build_current_turn_ack("soy de Torreón y tengo licencia tipo E")
-    assert reply.count("Perfecto") == 1
-    assert "¿Cuántos años tiene" in reply
-    assert "Perfecto. ¿" not in reply  # no quedó el doble prefijo
+    # conector breve del pool + pregunta; ningún dato del turno se repite en texto
+    assert reply.split(".")[0].strip() + "." in CT._FUNNEL_CONNECTORS
+    assert "Torreón" not in reply
+    assert "tipo E" not in reply
+    assert "?" in reply
 
 
-def test_ack_city_license_apto_single_perfecto_single_question():
+def test_ack_single_question_no_data_echoed():
     reply = build_current_turn_ack("soy de Torreón, licencia tipo E vigente y mi apto está vigente")
-    assert reply.count("Perfecto") == 1
     assert reply.count("?") == 1  # una sola pregunta visible
+    assert "Torreón" not in reply
+    assert "vigente" not in reply.lower()
 
 
-# ---------------------------------------------------------------------------
-# B6.2 — sin fact duplicado en el prefijo ("20 años, 20 años de experiencia").
-# El extractor único (profile_extractor, guard B3) NO saca candidate.age desde
-# una frase de experiencia, así que el ack menciona los años una sola vez.
-# ---------------------------------------------------------------------------
-
-def test_ack_experience_years_not_duplicated_as_age():
+def test_ack_experience_years_not_echoed():
     reply = build_current_turn_ack("tengo 20 años manejando full")
-    assert "20 años de experiencia" in reply
-    # "20 años" aparece solo dentro de "20 años de experiencia", no como edad aparte.
-    assert reply.count("20 años") == 1
-    assert "20 años," not in reply  # no el patrón "20 años, 20 años de experiencia"
+    # ni el valor de años ni "full" se repiten en el acuse (sin eco de datos)
+    assert "20 años" not in reply
+    assert "tracto full" not in reply
+    assert "?" in reply
 
 
-def test_ack_experience_full_mentioned_once():
-    reply = build_current_turn_ack("tengo 20 años manejando full")
-    assert reply.count("tracto full") == 1
+def test_ack_connector_varies_across_turns():
+    # El pool de conectores tiene más de una opción — no es una frase enlatada fija.
+    assert len(CT._FUNNEL_CONNECTORS) > 1
 
 
 # ---------------------------------------------------------------------------
-# B7.3 — cierre de perfil en horario: siguiente contacto claro, sin prometer agenda.
+# Cierre de perfil: ligero, indica el siguiente paso una sola vez, sin prometer
+# agenda ni repetir el recordatorio de proceso condicionado al interés.
 # ---------------------------------------------------------------------------
 
-def test_profile_complete_closing_in_hours_mentions_team_contact(monkeypatch):
+def test_profile_complete_closing_in_hours_indicates_next_step(monkeypatch):
     monkeypatch.setattr(CT, "is_business_hours", lambda: True)
     reply = CT._profile_complete_closing()
-    assert "nuestro equipo pueda contactarte dentro del horario de atención" in reply
+    assert "documentos" in reply.lower()
     assert "ya quedó agendada" not in reply.lower()
+    assert "siempre que sigas interesado" not in reply.lower()
 
 
 def test_profile_complete_closing_out_of_hours_keeps_office_hours(monkeypatch):
     monkeypatch.setattr(CT, "is_business_hours", lambda: False)
     reply = CT._profile_complete_closing()
     assert "lunes a viernes de 08:00 a 17:30 hrs" in reply
-    assert "nuestro equipo pueda contactarte dentro del horario de atención" not in reply
+    assert "siempre que sigas interesado" not in reply.lower()

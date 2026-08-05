@@ -41,7 +41,7 @@ ESTADO_TAREA_DISPLAY: dict[str, str] = {
 # Campos faltantes de perfil → texto natural para el candidato
 _CAMPO_DISPLAY: dict[str, str] = {
     "ciudad":                    "ciudad o estado de residencia",
-    "tipo de licencia":          "tipo de licencia federal (A, B o E)",
+    "tipo de licencia":          "tipo de licencia federal (B o E)",
     "vigencia de licencia":      "vigencia de su licencia federal",
     "apto médico":               "apto médico vigente",
     "tipo de unidad: tracto full o sencillo": "tipo de unidad (tracto full o sencillo)",

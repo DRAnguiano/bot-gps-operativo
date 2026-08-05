@@ -95,6 +95,7 @@ def test_target_vehicle_clears_prior_escuelita(message):
 
 def test_corrected_vehicle_type_is_not_reasked():
     facts = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreón",
         "candidate.age": "35",
         "experience.vehicle_type": "sencillo",  # valor corregido (antes "full")

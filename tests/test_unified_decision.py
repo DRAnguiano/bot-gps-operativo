@@ -54,6 +54,8 @@ def test_note_no_pregunto_documentos_cuando_registro_experiencia():
         "conversation": {},
     }
     note = render_candidate_note(ctx, ["bot_activo"])
+    # "5" registró experiencia (aparece en "Lo que ya sabemos"); el documento
+    # laboral NO se marca como respondido/preguntado — sigue en "Falta confirmar".
     assert "Experiencia: 5 años" in note
-    docline = next(l for l in note.split("\n") if l.startswith("Cartas/documentos:"))
-    assert "Preguntó" not in docline
+    assert "Preguntó" not in note
+    assert "Documento laboral" in note.split("⚠️ Falta confirmar")[-1]

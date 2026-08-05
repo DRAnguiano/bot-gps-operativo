@@ -20,7 +20,7 @@ from app.knowledge.memory_guard import (
 )
 import app.knowledge.intent_orchestrator as IO
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 
 def _answer(field: str, value: str, confidence: float = 0.95) -> dict:
@@ -53,10 +53,12 @@ def test_forbidden_from_known_facts_presence():
 
 
 def test_next_funnel_question_skips_forbidden():
-    facts: dict = {}  # sin facts: el primer paso sería city
-    assert IO.next_funnel_question(facts) == FUNNEL_CITY_Q
+    # candidate.name es el primer paso del funnel; con nombre ya conocido, city es
+    # el siguiente.
+    facts_with_name = {"candidate.name": "Juan Pérez"}
+    assert IO.next_funnel_question(facts_with_name) == FUNNEL_CITY_Q
     # con city prohibido (lo reclama/ya respondió), salta a la siguiente
-    nq = IO.next_funnel_question(facts, ["candidate.city"])
+    nq = IO.next_funnel_question(facts_with_name, ["candidate.city"])
     assert nq != FUNNEL_CITY_Q and nq is not None
 
 
@@ -65,6 +67,7 @@ FUNNEL_CITY_Q = "¿Desde qué ciudad o estado nos escribe?"
 
 # ── Reclamo de memoria: los tres casos (Scenario: Reclamo de memoria) ─────────
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — _is_memory_claim usa LLM T=0")
 def test_memory_claim_reaffirm_when_prior_matches():
     enriched = _enriched([_answer("experience.vehicle_type", "full")])
@@ -77,6 +80,7 @@ def test_memory_claim_reaffirm_when_prior_matches():
     assert "experience.vehicle_type" in mg["forbidden_questions"]
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — _is_memory_claim usa LLM T=0")
 def test_memory_claim_process_as_fact_when_no_prior():
     enriched = _enriched([_answer("experience.vehicle_type", "full")])
@@ -84,6 +88,7 @@ def test_memory_claim_process_as_fact_when_no_prior():
     assert mg["memory_claim"]["resolution"] == "process_as_fact"
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — _is_memory_claim usa LLM T=0")
 def test_memory_claim_conflict_when_prior_differs():
     enriched = _enriched([_answer("experience.vehicle_type", "full")])
@@ -105,7 +110,9 @@ def test_claim_phrase_without_core_answer_is_noop():
 
 
 # ── Integración en plan_and_respond ───────────────────────────────────────────
+# plan_and_respond llama a classify_message (LLM real, sin mock) — sin guard previo.
 
+@pytest.mark.external_llm
 def test_plan_reaffirm_does_not_reask_and_does_not_rewrite():
     enriched = _enriched([_answer("experience.vehicle_type", "full")])
     known = {"experience.vehicle_type": "full"}
@@ -118,6 +125,7 @@ def test_plan_reaffirm_does_not_reask_and_does_not_rewrite():
     assert "¿ha manejado sencillo, full" not in plan["response_text"].lower()
 
 
+@pytest.mark.external_llm
 def test_plan_conflict_asks_neutral_confirmation_no_funnel_stack():
     enriched = _enriched([_answer("experience.vehicle_type", "full")])
     known = {"experience.vehicle_type": "sencillo"}
@@ -133,10 +141,14 @@ def test_plan_does_not_repeat_answered_questions():
     # "si tengo cartas": registra documents.proof y NO repite lo ya respondido.
     enriched = _enriched([_answer("documents.proof", "cartas")])
     known = {
+        "candidate.name": "Juan Pérez",
+        "candidate.age": "35",
         "candidate.city": "Torreón",
         "experience.vehicle_type": "full",
-        "license.type": "E", "license.status": "vigente",
-        "medical.apto_status": "vigente",
+        # FUNNEL_STEPS ("license") requiere category+expiration_text; ("medical")
+        # requiere apto_expiration_text — no los alias license.type/apto_status.
+        "license.category": "E", "license.expiration_text": "vence en 1 año",
+        "medical.apto_expiration_text": "vence en 1 año",
         "experience.years": "10",
     }
     plan = IO.plan_and_respond(enriched, "si tengo cartas", known)

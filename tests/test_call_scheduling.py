@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 import app.lead_memory.profile_extractor as PE
 from app.chatwoot_note_sync import (
@@ -30,6 +30,7 @@ from app.knowledge.business_hours import classify_call_window
 
 # ── extractor: detección de solicitud de llamada ──────────────────────────────
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — call_requested usa LLM T=0")
 @pytest.mark.parametrize("message", [
     "quiero que me llamen",
@@ -44,6 +45,7 @@ def test_call_request_sets_scheduling_facts(message):
     assert facts.get("scheduling.call_status") == "pending"
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — call_requested usa LLM T=0")
 @pytest.mark.parametrize("message", [
     "no quiero llamada, mejor escríbanme",
@@ -56,6 +58,7 @@ def test_no_call_request_no_scheduling_facts(message):
     assert "scheduling.call_requested" not in facts
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — call_requested usa LLM T=0")
 def test_call_window_text_captured():
     facts = PE.extract_profile_facts_as_dict("me pueden llamar mañana a las 4")
@@ -74,8 +77,12 @@ def _ctx(facts=None, requires_human=False, risk_level=None):
 
 
 _PERFIL_LISTO_FACTS = {
+    "candidate.name": "Juan Pérez",
+    "candidate.age": "35",
     "license.category": "E",
+    "license.expiration_text": "vence en 2 años",
     "medical.apto_status": "vigente",
+    "medical.apto_expiration_text": "vence en 1 año",
     "experience.vehicle_type": "full",
     "experience.years": "10 años",
     "documents.labor_letters_status": "available",
@@ -160,17 +167,23 @@ def test_window_unknown(window):
 # refleja dentro/fuera/no interpretable del horario de atención.
 # ══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.external_llm
+@pytest.mark.skipif(_NO_GROQ, reason="requiere GEMINI_API_KEY — call_requested usa LLM T=0")
 def test_extractor_sets_call_window_valid_true():
     facts = PE.extract_profile_facts_as_dict("me pueden llamar mañana a las 3 de la tarde")
     assert facts.get("scheduling.call_requested") == "true"
     assert facts.get("scheduling.call_window_valid") == "true"
 
 
+@pytest.mark.external_llm
+@pytest.mark.skipif(_NO_GROQ, reason="requiere GEMINI_API_KEY — call_requested usa LLM T=0")
 def test_extractor_sets_call_window_valid_false():
     facts = PE.extract_profile_facts_as_dict("me pueden llamar a las 7 de la noche")
     assert facts.get("scheduling.call_window_valid") == "false"
 
 
+@pytest.mark.external_llm
+@pytest.mark.skipif(_NO_GROQ, reason="requiere GEMINI_API_KEY — call_requested usa LLM T=0")
 def test_extractor_call_window_valid_unknown_sin_ventana():
     facts = PE.extract_profile_facts_as_dict("me pueden llamar?")
     assert facts.get("scheduling.call_requested") == "true"
@@ -205,7 +218,7 @@ def test_note_shows_call_window_fuera():
 
 def test_note_shows_call_window_no_interpretable():
     note = _note_with_scheduling("unknown")
-    assert "no interpretable" in note.lower()
+    assert "por confirmar" in note.lower()
 
 
 def test_note_no_call_section_without_request():

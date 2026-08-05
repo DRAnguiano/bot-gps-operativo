@@ -131,11 +131,8 @@ DOCUMENT_WORDS = (
     "información", "datos", "licencia", "apto", "ine", "curp", "comprobante", "cartas",
 )
 
-BUSINESS_QUESTION_TERMS = (
-    "pago", "pagan", "sueldo", "salario", "documento", "documentos", "papeles",
-    "requisitos", "licencia", "apto", "ruta", "rutas", "vacante", "vacantes",
-    "antidoping", "prueba", "orina", "base", "bases",
-)
+# Origen ÚNICO en current_turn (Fase 2/D5): evita dos listas divergentes.
+from app.knowledge.current_turn import BUSINESS_QUESTION_TERMS  # noqa: E402
 
 FAREWELL_HINTS = (
     "gracias señor", "gracias senor", "gracias muy amable", "muchas gracias",
@@ -238,17 +235,63 @@ def _generate_joke_reply(fallback: str) -> str:
     return f"{joke} {_JOKE_BRIDGE}"
 
 
+def _generate_situated_reply(situation: str, fallback: str, *, max_tokens: int = 120) -> str:
+    """Texto fijo → GENERADO (D8, gemini-full-provider-migration): la situación se
+    describe al LLM (persona Mundo) y el texto enlatado queda solo como degradación
+    ante fallo/vacío. Nunca promete contratación ni inventa datos."""
+    try:
+        from app.gemini_client import dispatch_generation
+        from app.persona_config import SYSTEM_PROMPT
+        prompt = (
+            f"{situation} Responde en 1-2 frases, cálido y natural (mexicano norteño), "
+            "sin preguntas, sin prometer contratación ni inventar datos o cifras. "
+            "Trata de usted en singular — nunca tutees ni uses plural corporativo "
+            "(\"indicarnos\", \"necesitamos\")."
+        )
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.5, max_tokens=max_tokens) or "").strip()
+        return out or fallback
+    except Exception:
+        return fallback
+
+
+def _join_with_nudge(reply: str, nudge: str) -> str:
+    """Une respuesta + pregunta del funnel garantizando UNA sola instancia de la
+    pregunta (conv 178: el join apilaba fragmentos y re-adjuntaba la pregunta ya
+    contenida). Igualdad normalizada — conservador: solo dedupe exacto."""
+    if not nudge:
+        return reply
+    if not reply:
+        return nudge
+    if normalize_text(nudge) in normalize_text(reply):
+        return reply
+    return f"{reply}\n\n{nudge}"
+
+
 def _controlled_reply_from_contract(contract: dict[str, Any]) -> str:
     template = contract.get("reply_template")
     if isinstance(template, dict) and template.get("text"):
         text = str(template["text"])
         if template.get("id") == "static_joke":
             return _generate_joke_reply(fallback=text)
+        if template.get("id") == "document_ack":
+            return _generate_situated_reply(
+                "El candidato avisa que enviará o acaba de mencionar sus documentos. "
+                "Acusa recibo del aviso y dile que aquí los esperamos para su expediente.",
+                fallback=text,
+            )
         return text
     if contract.get("requires_clarification"):
         return CONTROLLED_CLARIFICATION_REPLY
     if contract.get("requires_human"):
-        return "Ese punto debe revisarlo nuestro equipo antes de continuar. Lo dejo anotado para seguimiento."
+        # Acuse situado (D8): el enlatado queda solo como degradación. El LLM
+        # reconoce lo que el candidato dijo en vez de soltar una derivación seca.
+        return _generate_situated_reply(
+            "El candidato tocó un tema que debe revisar nuestro equipo humano antes "
+            "de continuar. Reconoce con respeto lo que compartió y dile que ese punto "
+            "lo revisa nuestro equipo y le damos seguimiento — sin juzgarlo, sin "
+            "confirmar ni descartar su continuidad.",
+            fallback="Ese punto debe revisarlo nuestro equipo antes de continuar. Lo dejo anotado para seguimiento.",
+        )
     return CONTROLLED_FALLBACK_REPLY
 
 
@@ -274,20 +317,11 @@ def _time_reply() -> str:
     return f"En Torreón son las {time_text}; es la misma zona horaria del centro de México."
 
 
-def _looks_like_question(message: str) -> bool:
-    """Gate barato para `_resolve_embedded_question`: ¿el mensaje trae señal de
-    pregunta? Evita invocar el clasificador (costo) en respuestas puras. Los temas
-    RAG-contestables coinciden con BUSINESS_QUESTION_TERMS (pago, rutas, documentos,
-    licencia, apto, antidoping…)."""
-    if "?" in message or "¿" in message:
-        return True
-    return _message_has_any(message, BUSINESS_QUESTION_TERMS)
-
-
 def _resolve_embedded_question(
     message: str,
     contract: dict[str, Any],
     lead_memory: dict[str, Any] | None,
+    turn_signals: Any = None,
 ) -> dict[str, Any] | None:
     """answer_primary_question (multi-intent al path vivo).
 
@@ -302,7 +336,11 @@ def _resolve_embedded_question(
     """
     if contract.get("requires_rag") or contract.get("requires_human"):
         return None
-    if not _looks_like_question(message):
+    # Detector ÚNICO (Fase 2/D5): mismo que consume el guard del worker. Con
+    # turn_signals cubre el compuesto "sin ? ni término conocido"; sin señal es
+    # determinista (gate barato, no dispara LLM).
+    from app.knowledge.current_turn import has_business_question
+    if not has_business_question(message, turn_signals):
         return None
     try:
         from app.knowledge.intent_classifier import classify_message
@@ -745,6 +783,49 @@ def _apply_business_rule_overrides(message: str, contract: dict[str, Any], turn_
     return contract
 
 
+def _override_rag_hijack_on_data_turn(
+    contract: dict[str, Any],
+    message: str,
+    extraction: Any,
+    turn_signals: Any,
+) -> dict[str, Any]:
+    """Un turno que solo APORTA datos de perfil no es una pregunta de requisitos.
+
+    Clase conv-166/172 (D6 gemini-full-provider-migration): aliases de una palabra
+    del Term `documentos_requisitos` ("licencia", "apto", "cartas laborales",
+    "vigente") secuestran mensajes que solo declaran datos ("tengo licencia E
+    vigente y cartas laborales") → ruta rag responde la lista genérica de
+    requisitos en vez de confirmar los datos y avanzar el funnel. El juicio
+    semántico es del extractor unificado (has_embedded_question distingue por
+    few-shots "tengo licencia E" de "¿qué licencia piden?"): si el LLM dice que
+    NO hay pregunta y el turno trae facts extraídos, la ruta rag del diccionario
+    se revierte al funnel de perfilamiento. Un "?" literal en el mensaje conserva
+    la ruta rag (cinturón: nunca silenciar una pregunta explícita).
+    """
+    if str(contract.get("route") or "") != "rag":
+        return contract
+    if extraction is None or not getattr(extraction, "fields", None):
+        return contract
+    if bool(getattr(turn_signals, "has_embedded_question", False)):
+        return contract
+    if "?" in (message or "") or "¿" in (message or ""):
+        return contract
+    updated = dict(contract)
+    updated.update({
+        "route": "profile",
+        "intent": "candidate_profile_signal",
+        "requires_rag": False,
+        "requires_clarification": False,
+        "reason": "rag_hijack_data_turn_override",
+    })
+    log.info(
+        "[RAG_HIJACK_OVERRIDE] ruta rag revertida a funnel: fields=%s terms=%s",
+        sorted(getattr(extraction, "fields", {}) or {}),
+        contract.get("recognized_terms"),
+    )
+    return updated
+
+
 # Léxico de vigencia: el bot NUNCA emite "caduca/caducidad" al candidato; usa
 # "vence/vencimiento/vigencia". Opera sobre el texto de salida (preserva mayúsculas/
 # acentos), no sobre texto normalizado. Idempotente.
@@ -781,6 +862,14 @@ def _should_use_friendly_llm(message: str, contract: dict[str, Any]) -> bool:
     if route == "friendly_smalltalk" or intent in {"friendly_smalltalk", "casual_recruiter_reply"}:
         return True
     if route == "fallback" and intent == "unknown":
+        return True
+    # Aflojado 2026-07-07 (decisión del usuario: "quitar respuestas predeterminadas,
+    # dar más poder al LLM"): cualquier turno que llegue aquí (no requires_rag, no
+    # local_time, no chiste — ya resueltos por ramas anteriores del dispatch) y no
+    # tenga una rama dedicada más abajo (greeting, candidate_profile_signal) ni pida
+    # aclaración explícita, se responde con el LLM cálido en vez del texto enlatado
+    # de _controlled_reply_from_contract (CONTROLLED_FALLBACK_REPLY genérico).
+    if intent not in {"greeting", "candidate_profile_signal"} and not contract.get("requires_clarification"):
         return True
     return False
 
@@ -872,7 +961,37 @@ def _friendly_introduces_number(reply: str, message: str) -> bool:
     return _text_has_number(reply) and not _text_has_number(message)
 
 
-def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory: dict[str, Any] | None = None) -> dict[str, Any]:
+# Guía por FINALIDAD conversacional (gemini-full-provider-migration D5/D8): la señal
+# `conversational_purpose` del extractor unificado orienta el tono de la respuesta
+# generada — humano y específico a la situación, no un comentario genérico.
+_PURPOSE_GUIDANCE: dict[str, str] = {
+    "queja": (
+        "El candidato expresa MOLESTIA o frustración. Primero reconoce su molestia "
+        "con empatía genuina (sin excusas largas ni ponerte a la defensiva), luego "
+        "una frase que transmita que su proceso sí avanza y nos importa."
+    ),
+    "agradecimiento": (
+        "El candidato AGRADECE. Devuélvele el gesto breve y cálido (variado, no "
+        "siempre 'de nada'), y refuerza que seguimos al pendiente de su proceso."
+    ),
+    "despedida": (
+        "El candidato se DESPIDE. Despídete cálido y breve, deja la puerta abierta "
+        "para retomar cuando guste. No agregues información nueva."
+    ),
+    "animo": (
+        "El candidato busca ÁNIMO o confianza sobre su proceso. Anímalo genuino y "
+        "concreto SIN prometer contratación ni resultados: valora su interés y su "
+        "experiencia declarada, y que el equipo revisa cada perfil con seriedad."
+    ),
+    "smalltalk": (
+        "El candidato hace plática casual. Síguele la plática UNA frase amable y "
+        "natural (mexicano norteño, sin exagerar), sin desviarte a temas sensibles."
+    ),
+}
+
+
+def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory: dict[str, Any] | None = None,
+                              purpose: str = "none") -> dict[str, Any]:
     started = time.perf_counter()
 
     # No-respuesta ("ahorita le respondo", "espéreme", "luego le digo"): respuesta
@@ -897,6 +1016,12 @@ def _answer_friendly_message(message: str, contract: dict[str, Any], lead_memory
         if strong else
         "Responde corto y cordial."
     )
+    # Finalidad detectada por el extractor: instrucción específica de la situación
+    # (queja/agradecimiento/despedida/ánimo/smalltalk) para responder humano, no
+    # con un comentario genérico.
+    _purpose_note = _PURPOSE_GUIDANCE.get(purpose, "")
+    if _purpose_note:
+        tono_extra = f"{_purpose_note} {tono_extra}"
 
     prompt = f"""
 Eres Mundo, del equipo de reclutamiento de Transmontes. Reclutador mexicano: directo, cálido, breve.
@@ -992,6 +1117,8 @@ Reglas:
 - Si no hay nombre disponible, omite el vocativo; no uses placeholders como "[nombre]".
 - NUNCA inventes mínimos de años, sueldos, ni condiciones que no se hayan mencionado.
 - NUNCA prometas la vacante ni uses "Capital Humano" como tercero; usa "nuestro equipo".
+- Trata de usted en singular — nunca tutees ("tu expediente", "avísanos") ni uses
+  plural corporativo.
 - Máximo 3 oraciones. Sin preguntas al final.
 
 Contexto del lead: {memory_text}
@@ -1011,9 +1138,14 @@ Tu acuse empático (3 oraciones, sin pregunta final):
     return reply
 
 
-def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any]:
+def _answer_rag_message(
+    message: str,
+    contract: dict[str, Any],
+    facts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     rag_enabled = _env_bool("KNOWLEDGE_RAG_GENERATION_ENABLED", True)
+    from app.knowledge.intent_orchestrator import _residency_prompt_note
 
     context = retrieve_preferred_context(message, preferred_sources=contract.get("preferred_sources") or [])
 
@@ -1033,6 +1165,7 @@ def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any
         message=message,
         knowledge_contract=contract,
         context_text=context.get("context_text") or "",
+        residency_note=_residency_prompt_note(facts),
     )
 
     if not rag_enabled:
@@ -1065,7 +1198,7 @@ def _answer_rag_message(message: str, contract: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _stage_for_contract(contract: dict[str, Any], message: str) -> str:
+def _stage_for_contract(contract: dict[str, Any], message: str, turn_signals: Any = None) -> str:
     intent = str(contract.get("intent") or "unknown")
     route = str(contract.get("route") or "fallback")
     text = normalize_text(message)
@@ -1073,7 +1206,10 @@ def _stage_for_contract(contract: dict[str, Any], message: str) -> str:
     try:
         from app.settings import AGE_DISQUALIFICATION_LIMIT
         from app.lead_memory.profile_extractor import extract_profile_facts_as_dict
-        age = int(str(extract_profile_facts_as_dict(message).get("candidate.age") or "").strip())
+        # Perf: pasa turn_signals (ya calculado por el extractor unificado del worker)
+        # para NO re-clasificar con TIPC — era 1 llamada LLM redundante por turno
+        # (cuello de latencia bajo carga: reintentos 429).
+        age = int(str(extract_profile_facts_as_dict(message, turn_signals=turn_signals).get("candidate.age") or "").strip())
         if age >= AGE_DISQUALIFICATION_LIMIT:
             return "closed"
     except Exception:
@@ -1376,83 +1512,92 @@ _ACK_INTROS = [
 
 
 def _build_profile_ack_reply(message: str) -> str | None:
-    """Build a short confirmation from facts explicitly stated in the message.
+    """Acuse breve de un turno de dato de perfil. Sin eco de datos (feedback usuario
+    2026-07-03): devuelve un conector natural VARIADO; la siguiente pregunta la añade el
+    funnel nudge, y la descalificación por edad la resuelve `_next_funnel_question_or_none`.
+    Evita el re-extract (quitaba un TIPC redundante por turno) y el eco que llegó a
+    afirmar 'vigente' un dato ya vencido (bug smoke 2026-07-03)."""
+    from app.knowledge.current_turn import _FUNNEL_CONNECTORS
+    return random.choice(_FUNNEL_CONNECTORS)
 
-    Returns None when the extractor finds nothing recognizable, letting the
-    caller fall through to whatever reply is appropriate.
-    """
+
+# ---------------------------------------------------------------------------
+# Bloque 3 (D1): respuesta natural ante negativa/lateral/absurda a un campo del funnel.
+# ---------------------------------------------------------------------------
+
+# Descripción humana del dato pendiente (para re-encauzar con naturalidad, sin eco).
+_REENCAUCE_FIELD_DESC = {
+    "experience.years": "sus años de experiencia como operador",
+    "experience.vehicle_type": "si su experiencia es en tracto full o en sencillo",
+    "candidate.city": "la ciudad donde se encuentra actualmente",
+    "candidate.age": "su edad",
+    "candidate.name": "su nombre",
+    "license.category": "el tipo de licencia federal (B o E) que tiene",
+    "license.expiration_text": "la vigencia de su licencia federal",
+    "medical.apto_expiration_text": "la vigencia de su apto médico",
+    "documents.labor_letters_status": "su comprobante laboral",
+}
+# Alternativa/política CONOCIDA por campo (guardrail: no inventar; solo lo de Bloque 2).
+_REENCAUCE_ALT = {
+    "license.expiration_text": "Si está vencida o en trámite, también aceptamos el comprobante de pago de la renovación.",
+    "medical.apto_expiration_text": "Si está vencido o en trámite, también aceptamos el comprobante de pago de la renovación.",
+}
+
+
+def _build_natural_reencauce(
+    field: str,
+    message: str,
+    reason: str,
+    final: bool = False,
+    facts: dict[str, Any] | None = None,
+) -> str | None:
+    """Respuesta natural (persona Mundo) cuando el candidato responde a un campo del
+    funnel con una negativa, algo irrelevante o absurdo. Acusa con tacto, ofrece la
+    alternativa CONOCIDA si aplica (sin inventar política) y re-encauza al dato pendiente.
+    NO marca el campo como respondido (ROUTE1 no confirmó → sigue pendiente).
+
+    ``final=True``: mensaje de CIERRE tras insistencia sostenida (5ª) — empático, sin
+    volver a preguntar, indicando que retomamos en cuanto tenga el dato/documento."""
+    desc = _REENCAUCE_FIELD_DESC.get(field, "el dato que le pedí")
+    alt = _REENCAUCE_ALT.get(field, "")
+    if field == "documents.labor_letters_status":
+        from app.knowledge.current_turn import residency_document_requirement_note
+        alt = residency_document_requirement_note(facts or {})
+    situacion = (
+        "el candidato dice que no lo tiene o lo niega"
+        if reason == "negation"
+        else "el candidato respondió algo que no corresponde a esa pregunta"
+    )
+    if final:
+        prompt = (
+            f"El candidato ha insistido varias veces sin poder darte {desc}, apelando a su "
+            f"situación personal (último mensaje: \"{message[:200]}\"). "
+            "Responde con MUCHA empatía en 2 frases, cerrando con calidez y firmeza amable: "
+            "reconoce su situación, explícale que por política de la empresa no podemos avanzar sin "
+            f"ese requisito, y que EN CUANTO tenga {desc} retomamos con gusto su proceso y quedas al pendiente. "
+            "NO vuelvas a preguntar en esta respuesta. Nunca regañes ni suenes cortante. "
+            "No inventes cifras ni políticas fuera de esta guía. Nunca uses la palabra 'caduca'."
+        )
+    else:
+        prompt = (
+            f"Le preguntaste al candidato por {desc}. Ahora {situacion}: \"{message[:200]}\". "
+            "Responde con EMPATÍA GENUINA en 2 o 3 frases, con este hilo: "
+            "(1) valida con calidez lo que el candidato comparte, reconociendo su punto (sin repetirlo literal ni regañar); "
+            "(2) explícale con tacto que, por formalidad y política de la empresa, necesitamos el dato concreto "
+            "o el documento que lo acredite para poder integrarlo a su expediente; "
+            + (f"(en ese punto menciona tal cual esta opción: {alt}) " if alt else "")
+            + f"(3) re-encauza pidiéndole de nuevo {desc}, de forma natural y amable. "
+            "Nunca suenes robótico ni cortante. No inventes cifras, fechas ni políticas específicas fuera de esta guía. "
+            "Nunca uses la palabra 'caduca'."
+        )
     try:
-        from app.lead_memory.profile_extractor import extract_profile_facts
-        raw = extract_profile_facts(message)
-    except Exception:
+        from app.gemini_client import dispatch_generation
+        from app.persona_config import SYSTEM_PROMPT
+        out = dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.55, max_tokens=200)
+        return (out or "").strip() or None
+    except Exception as exc:
+        log.warning("[NATURAL_REENCAUCE] generación falló: %s", exc)
         return None
-
-    if not raw:
-        return None
-
-    by_key = {f"{f['fact_group']}.{f['fact_key']}": f["fact_value"] for f in raw}
-    try:
-        from app.settings import AGE_DISQUALIFICATION_LIMIT
-        from app.knowledge.current_turn import age_disqualification_reply, _to_int
-        age_val = int(str(by_key.get("candidate.age") or "").strip())
-        if age_val >= AGE_DISQUALIFICATION_LIMIT:
-            return age_disqualification_reply(age_val)
-    except (ValueError, ImportError):
-        pass
-
-    parts: list[str] = []
-
-    # City
-    city = by_key.get("candidate.city")
-    if city:
-        parts.append(f"reside en {city}")
-
-    # License — merge category + validity into one phrase when both present
-    lic_cat = by_key.get("license.category")
-    lic_st = by_key.get("license.status")
-    if lic_cat and lic_st in {"vigente", "sí", "si"}:
-        parts.append(f"licencia federal tipo {lic_cat} vigente")
-    elif lic_cat:
-        parts.append(f"licencia federal tipo {lic_cat}")
-    elif lic_st in {"vigente", "sí", "si"}:
-        parts.append("licencia federal vigente")
-
-    # Apto médico
-    apto = by_key.get("medical.apto_status") or by_key.get("document.apto_status")
-    if apto in {"vigente", "sí", "si"}:
-        parts.append("apto médico vigente")
-
-    # Experience — vehicle_type + years
-    years = by_key.get("experience.years")
-    vt    = by_key.get("experience.vehicle_type")
-    vt_label = {"full": "tracto full", "sencillo": "sencillo"}.get(vt or "", vt or "")
-    if years and vt_label:
-        parts.append(f"{years} de experiencia en {vt_label}")
-    elif years:
-        parts.append(f"{years} de experiencia")
-    elif vt_label:
-        parts.append(f"experiencia en {vt_label}")
-
-    # Labor letters
-    labor = by_key.get("documents.labor_letters_status") or by_key.get("documents.labor_letters")
-    if labor in {"available", "sí", "si"}:
-        parts.append("cartas laborales disponibles")
-
-    # Age (mention only when accompanied by other facts to avoid bare "X años")
-    age = by_key.get("candidate.age")
-    if age and len(parts) >= 1:
-        parts.append(f"{age} años de edad")
-
-    if not parts:
-        return None
-
-    intro = random.choice(_ACK_INTROS)
-    if len(parts) == 1:
-        return f"{intro} {parts[0]}."
-    if len(parts) == 2:
-        return f"{intro} {parts[0]} y {parts[1]}."
-    listed = ", ".join(parts[:-1]) + f" y {parts[-1]}"
-    return f"{intro} {listed}."
 
 
 # ---------------------------------------------------------------------------
@@ -1496,8 +1641,8 @@ _FUNNEL_STEPS: list[dict] = [
     {
         "keys": {"license.category"},
         "variants": [
-            "¿Qué tipo de licencia federal tiene (A, B o E) y cuándo vence?",
-            "Para su perfil, ¿su licencia federal es tipo A, B o E, y cuándo vence?",
+            "¿Qué tipo de licencia federal tiene (B o E) y cuándo vence?",
+            "Para su perfil, ¿su licencia federal es tipo B o E, y cuándo vence?",
             "¿Qué tipo de licencia federal tiene y cuándo le vence?",
         ],
     },
@@ -1560,6 +1705,7 @@ _NO_FUNNEL_SIGNALS = frozenset({
 # confiable. Si una clave del step NO está aquí, el step no se registra
 # (no inventar, no mezclar legacy/canonical, no inferir desde texto).
 _FUNNEL_KEY_CANONICAL: dict[str, str] = {
+    "candidate.name": "candidate.name",
     "candidate.city": "candidate.city",
     "candidate.age": "candidate.age",
     "license.category": "license.type",
@@ -1648,6 +1794,29 @@ def _build_funnel_nudge(
         except Exception as exc:
             log.warning("[FUNNEL_NUDGE] extracción de hechos falló, nudge puede ser impreciso: %s", exc)
 
+    # Consumo MISMO-TURNO de la confirmación del resumen (conv 177): la persistencia
+    # ocurre en el worker después de componer, así que sin este merge el nudge se
+    # arma con facts pre-turno y re-emite el resumen que el candidato acaba de
+    # confirmar. Mismo detector que gobierna la persistencia (una sola semántica);
+    # SOLO se mergea funnel.summary_confirmed — otras inferencias de contexto no
+    # entran al nudge por esta vía.
+    try:
+        from app.knowledge.current_turn import _extract_context_confirmation_facts
+
+        _last_bot_raw = ""
+        for _m in reversed(lead_memory.get("messages") or []):
+            if isinstance(_m, dict) and _m.get("role") == "assistant":
+                _last_bot_raw = str(_m.get("message") or "")
+                break
+        if _last_bot_raw:
+            _ctx = _extract_context_confirmation_facts(
+                normalize_text(message), _last_bot_raw, _turn_signals=turn_signals,
+            )
+            if _ctx.get("funnel.summary_confirmed") == "true":
+                active_facts["funnel.summary_confirmed"] = "true"
+    except Exception as exc:
+        log.warning("[FUNNEL_NUDGE] detección de confirmación mismo-turno falló: %s", exc)
+
     # 3.3: vencido sin trámite → no emitir más nudges
     if active_facts.get("funnel.status") == "vencido_sin_tramite":
         return None, []
@@ -1660,7 +1829,11 @@ def _build_funnel_nudge(
     except (ValueError, ImportError):
         pass
 
-    from app.knowledge.current_turn import residency_document_question
+    from app.knowledge.current_turn import (
+        license_requirement_question,
+        residency_document_question,
+        vehicle_vacancy_question,
+    )
 
     # Leer último mensaje del bot (necesario para BUG-2 y BUG-3)
     _last_bot = ""
@@ -1699,23 +1872,34 @@ def _build_funnel_nudge(
             except Exception:
                 pass
 
+    # Comprobante de pago por licencia/apto vencido (Bloque 2): el funnel canónico lo pide
+    # ENTRE licencia y apto; _FUNNEL_STEPS solo checa presencia de key y lo omitiría (pidió
+    # apto en su lugar). Se replica aquí, solo cuando los datos previos ya están (no
+    # adelantar sobre un campo anterior faltante). Alinea la ruta del orquestador con el guard.
+    _pre_license_ready = all(active_facts.get(k) for k in (
+        "candidate.name", "candidate.city", "candidate.age",
+        "experience.vehicle_type", "license.category",
+    ))
+    if _pre_license_ready:
+        from app.knowledge.current_turn import _renewal_question_for_short_expiry
+        _renewal_q = _renewal_question_for_short_expiry(active_facts)
+        if _renewal_q:
+            return _renewal_q, []
+
     for step in _FUNNEL_STEPS:
         if not any(k not in active_facts for k in step["keys"]):
             continue
         # 2.4: vehicle_type conditioned on license category if already known
         if step["keys"] == {"experience.vehicle_type"}:
-            cat = (active_facts.get("license.category") or "").upper()
-            if cat == "B":
-                return (
-                    "Con licencia tipo B la vacante disponible es de sencillo. "
-                    "¿Le interesa una vacante de operador sencillo?",
-                    _canonical_asked_keys(step["keys"]),
-                )
-            elif cat == "E":
-                return (
-                    "¿Le interesa una vacante de tracto full o de sencillo?",
-                    _canonical_asked_keys(step["keys"]),
-                )
+            return (
+                vehicle_vacancy_question(active_facts),
+                _canonical_asked_keys(step["keys"]),
+            )
+        if step["keys"] == {"license.category"}:
+            return (
+                license_requirement_question(active_facts),
+                _canonical_asked_keys(step["keys"]),
+            )
         # 2.5 / P0-2: document question by residency; skip if candidate already answered
         if step["keys"] == {"documents.labor_letters_status"}:
             _proof = active_facts.get("documents.proof")
@@ -1729,6 +1913,20 @@ def _build_funnel_nudge(
             )
         return random.choice(step["variants"]), _canonical_asked_keys(step["keys"])
 
+    # Fallback de fuente única: _FUNNEL_STEPS solo checa presencia de keys y no modela
+    # reglas del funnel canónico (p. ej. comprobante de pago por licencia/apto vencido).
+    # Si el funnel del guard SÍ tiene una pregunta pendiente, emítela para no dejar el
+    # turno en un conector suelto ("Muy bien.") en las ramas ROUTE1/objeción/profile-ack.
+    # next_question_from_missing_facts (no _next_funnel_question_or_none): cuando el
+    # perfil se completa DENTRO de una respuesta RAG/friendly (ej. confirmación de
+    # documentos embebida en una pregunta), el resumen de confirmación (D6) debe
+    # aparecer aquí también — bug en vivo 2026-07-07 (conv 166): la confirmación de
+    # "cartas laborales" completó el perfil pero el turno se quedó con la respuesta
+    # RAG genérica sola, sin el resumen ni el cierre.
+    from app.knowledge.current_turn import next_question_from_missing_facts
+    _canon_q = next_question_from_missing_facts(active_facts)
+    if _canon_q:
+        return _canon_q, []
     return None, []  # All profile fields covered — no nudge needed
 
 
@@ -1828,6 +2026,8 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     contract = _apply_profile_guards(message, contract)
     contract = _apply_deterministic_overrides(message, contract)
     contract = _apply_business_rule_overrides(message, contract, turn_signals=turn_signals)
+    if _pre_extraction is not None:
+        contract = _override_rag_hijack_on_data_turn(contract, message, _pre_extraction, turn_signals)
 
     # ── 5a: Pre-handoff condicional ───────────────────────────────────────────
     # Antes de canalizar a Capital Humano, el bot verifica el dato mínimo que
@@ -1920,7 +2120,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # (perfil + pregunta) y la ruta principal no es RAG, resolvemos la pregunta
     # embebida. Si exige fuente autorizada y no la hay (pago), el fail-closed marca
     # requires_human ANTES de calcular flags/stage para que escale a HUMAN_REVIEW.
-    embedded_question = _resolve_embedded_question(message, contract, lead_memory_before)
+    embedded_question = _resolve_embedded_question(message, contract, lead_memory_before, turn_signals)
     if embedded_question and embedded_question["derive_to_human"]:
         contract["requires_human"] = True
         contract.setdefault("reason", "embedded_question_no_authorized_source")
@@ -1930,7 +2130,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
 
     current_stage = str(conversation.get("current_stage") or "START")
     next_stage = "HUMAN_REVIEW_REQUIRED" if contract.get("requires_human") else current_stage
-    lead_stage_to = _stage_for_contract(contract, message)
+    lead_stage_to = _stage_for_contract(contract, message, turn_signals)
 
     rag_result: dict[str, Any] | None = None
     friendly_result: dict[str, Any] | None = None
@@ -1938,14 +2138,40 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
 
     if contract.get("intent") == "local_time":
         reply = _time_reply()
+    elif bool(getattr(turn_signals, "is_joke_request", False)) and _is_safe_for_friendly_llm(message, contract):
+        # Bug en vivo 2026-07-07 (conv 166): "Oye usted no cuenta chistes..." embebido
+        # en un mensaje largo/compuesto no matcheaba el Term Neo4j smalltalk_joke
+        # (aliases exactos: "chistes" plural no matchea "chiste" singular), y el
+        # turno completo se clasificaba requires_rag por otro fragmento del mensaje
+        # → respuesta genérica ignorando el chiste. is_joke_request viene del
+        # extractor unificado (turn_intent_classifier, misma llamada LLM que ya
+        # corre cada turno — NO una llamada extra) y el LLM ya distingue una
+        # petición real ("cuéntame un chiste") de un uso idiomático/queja ("así que
+        # chiste" = qué ridículo) vía few-shots, sin depender de un substring
+        # rígido. Tiene prioridad sobre requires_rag: un chiste nunca necesita RAG.
+        # friendly_result (no una asignación suelta) para que el nudge de cierre de
+        # abajo se siga agregando.
+        friendly_result = {"reply": _generate_joke_reply(fallback=CONTROLLED_FALLBACK_REPLY)}
+        reply = friendly_result["reply"]
     elif contract.get("requires_rag"):
-        rag_result = _answer_rag_message(message, contract)
+        _rag_facts = {
+            f"{row['fact_group']}.{row['fact_key']}": row['fact_value']
+            for row in ((lead_memory_before or {}).get("facts") or [])
+            if isinstance(row, dict) and row.get("fact_group") and row.get("fact_key")
+        }
+        for _f in (_pre_validated or []):
+            if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                _rag_facts[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+        rag_result = _answer_rag_message(message, contract, _rag_facts)
         reply = rag_result["reply"]
     elif _should_use_friendly_llm(message, contract):
         if contract.get("route") == "fallback" and contract.get("intent") == "unknown":
             contract.update({"route": "friendly_smalltalk", "intent": "friendly_smalltalk", "reason": "safe_unknown_routed_to_friendly_llm"})
-            lead_stage_to = _stage_for_contract(contract, message)
-        friendly_result = _answer_friendly_message(message, contract, lead_memory_before)
+            lead_stage_to = _stage_for_contract(contract, message, turn_signals)
+        friendly_result = _answer_friendly_message(
+            message, contract, lead_memory_before,
+            purpose=str(getattr(turn_signals, "conversational_purpose", "none") or "none"),
+        )
         reply = friendly_result["reply"]
     elif contract.get("intent") == "greeting":
         # 2.3: candidato que regresa recibe ack corto + siguiente campo; primer turno → presentación completa
@@ -1983,6 +2209,7 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # ANTES del nudge para que el campo confirmado no se vuelva a preguntar este turno.
     _r1_ack: str | None = None
     _r1_confirmed = False
+    _natural_reencauce: str | None = None  # Bloque 3: respuesta natural a no-respuesta del funnel
     try:
         from app.knowledge.route1_contextual import ROUTE1_ACK, resolve_route1
         from app.lead_memory.last_asked_field import read_current_asked_field_keys
@@ -1992,10 +2219,16 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             _r1 = resolve_route1(message, _fresh_keys)
             if _r1["status"] == "confirmed":
                 _r1_confirmed = True
+                # Bloque 4: aportó un dato válido → reinicia el contador de insistencia.
+                from app.knowledge.insistence_guard import reset_insistence
+                reset_insistence(lead_key)
                 _r1_field: str = _r1["field"]
                 _r1_value = _r1.get("value")
-                _ack_tmpl = ROUTE1_ACK.get(_r1_field, "Entendido.")
-                _r1_ack = _ack_tmpl.format(value=_r1_value if _r1_value is not None else "")
+                # Sin eco de datos (feedback usuario 2026-07-03): conector breve variado
+                # en vez de "Entendido, {value}" / "{value} años, anotado".
+                import random as _random
+                from app.knowledge.current_turn import _FUNNEL_CONNECTORS
+                _r1_ack = _random.choice(_FUNNEL_CONNECTORS)
                 _parts = _r1_field.split(".", 1)
                 _r1_fact = {
                     "fact_group": _parts[0],
@@ -2014,6 +2247,42 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
                     lead_key, _fresh_keys, _r1["status"], _r1.get("field"),
                     _r1.get("value"), _r1.get("reason"),
                 )
+                # Bloque 3: negativa/lateral/absurda al campo preguntado → respuesta natural
+                # (LLM persona Mundo) que re-encauza, en vez de re-preguntar robótico. NO
+                # aplica si el mensaje trae pregunta de negocio (esa la resuelve el multi-intent).
+                from app.knowledge.current_turn import has_business_question as _hbq
+                if (_r1.get("reason") in {"negation", "no_number", "needs_clarification", "ambiguous"}
+                        and not _hbq(message, turn_signals)):
+                    # Bloque 4: cada no-respuesta/ruego suma al contador de insistencia.
+                    # A la 5ª → mensaje empático FINAL + pausa 1h (el worker suprime a partir
+                    # del siguiente turno). El avance del perfil se preserva.
+                    from app.knowledge.insistence_guard import (
+                        increment_insistence, set_pause, INSISTENCE_LIMIT,
+                    )
+                    _icount = increment_insistence(lead_key)
+                    _is_final = _icount >= INSISTENCE_LIMIT
+                    # Facts en scope (persistidos + validados del turno): `active_facts`
+                    # solo existe dentro de _build_funnel_nudge — usarlo aquí producía
+                    # NameError tragado por el except, dejando el re-encauce MUERTO en
+                    # producción (bug en vivo conv 175, 2026-07-10) y el contador de
+                    # insistencia avanzando sin mensaje.
+                    _reencauce_facts = {
+                        f"{r['fact_group']}.{r['fact_key']}": str(r["fact_value"])
+                        for r in (lead_memory_before.get("facts") or []) if r.get("fact_value")
+                    }
+                    for _f in (_pre_validated or []):
+                        if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                            _reencauce_facts[f"{_f['fact_group']}.{_f['fact_key']}"] = str(_f["fact_value"])
+                    _natural_reencauce = _build_natural_reencauce(
+                        _fresh_keys[0], message, str(_r1.get("reason")), final=_is_final, facts=_reencauce_facts
+                    )
+                    if _natural_reencauce and _is_final:
+                        set_pause(lead_key)
+                        log.info("[INSISTENCE_PAUSE] lead=%s field=%s count=%s → pausa 1h",
+                                 lead_key, _fresh_keys[0], _icount)
+                    elif _natural_reencauce:
+                        log.info("[NATURAL_REENCAUCE] lead=%s field=%s reason=%s count=%s",
+                                 lead_key, _fresh_keys[0], _r1.get("reason"), _icount)
     except Exception as exc:
         log.warning("[ROUTE1] omitido por error: %s", exc)
 
@@ -2047,8 +2316,8 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
         if _has_proof_ninguno:
             _objection_fired = True
             _FIELD_LABELS = {
-                "documents.proof": "las cartas laborales membretadas",
-                "documents.labor_letters_status": "las cartas laborales",
+                "documents.proof": "su comprobante laboral",
+                "documents.labor_letters_status": "su comprobante laboral",
             }
             _field_label = _FIELD_LABELS.get("documents.proof", "el documento")
             reply = _answer_objection_message(message, lead_memory_before, _field_label)
@@ -2077,18 +2346,41 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
     # Append one funnel profiling question after RAG, friendly, or profile ack.
     # Capture which canonical field(s) the nudge asked about (passive metadata).
     asked_field_keys: list[str] = []
-    if (rag_result is not None or friendly_result is not None or profile_ack_used or _r1_confirmed or _objection_fired) and not embedded_derived:
+    if _natural_reencauce:
+        # Bloque 3: la respuesta natural YA re-encauza el dato pendiente; es el reply
+        # completo, sin nudge robótico. El campo sigue pendiente (ROUTE1 no confirmó),
+        # así que el siguiente turno vuelve a intentar resolverlo.
+        reply = _natural_reencauce
+    elif (rag_result is not None or friendly_result is not None or profile_ack_used or _r1_confirmed or _objection_fired) and not embedded_derived:
         nudge, asked_field_keys = _build_funnel_nudge(
             message, contract, lead_memory_before,
             turn_signals=turn_signals, pre_validated_facts=_pre_validated,
         )
         if _r1_confirmed:
-            # Ack del dato confirmado + siguiente pregunta (o solo ack si perfil completo)
-            reply = f"{_r1_ack}\n\n{nudge}" if nudge else (_r1_ack or "")
+            # Multi-intención (bug prod conv 159): si además de confirmar el dato hubo
+            # respuesta RAG a una pregunta embebida ("full pero ¿cuánto pagan?"), NO la
+            # descartes. Compón: ack del dato + respuesta a la pregunta + siguiente
+            # pregunta del funnel. Sin RAG, solo ack (+ nudge si hay).
+            _rag_ans = reply.strip() if (rag_result is not None and reply and reply.strip()) else ""
+            if not _rag_ans and nudge:
+                # Dato confirmado sin pregunta embebida: acuse situado GENERADO
+                # (FUNNEL_LLM_TRANSITIONS); conector + pregunta como degradación.
+                from app.knowledge.current_turn import generate_funnel_transition_reply
+                _fresh_r1 = {
+                    f"{_f['fact_group']}.{_f['fact_key']}": _f["fact_value"]
+                    for _f in (_pre_validated or []) if _f.get("fact_value") is not None
+                }
+                reply = generate_funnel_transition_reply(
+                    message, _fresh_r1, nudge,
+                    fallback=_join_with_nudge(_r1_ack or "", nudge),
+                )
+            else:
+                _base = "\n\n".join(p for p in (_r1_ack, _rag_ans) if p)
+                reply = _join_with_nudge(_base, nudge) if (_base or nudge) else (_r1_ack or "")
         elif _objection_fired:
             # Acuse empático ya está en reply; agregar siguiente pregunta del funnel si hay
             if nudge:
-                reply = f"{reply}\n\n{nudge}"
+                reply = _join_with_nudge(reply, nudge)
             # Si no hay nudge, el acuse es la respuesta completa (perfil avanza al cierre)
         elif nudge:
             # 3.2: puente suave si el RAG respondió una duda en el primer turno (sin nombre aún)
@@ -2099,9 +2391,44 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             _is_first_rag = rag_result is not None and not _facts_before.get("candidate.name")
             if _is_first_rag:
                 nudge = f"Si le interesa continuar con la vacante, {nudge[0].lower()}{nudge[1:]}"
-            reply = f"{reply}\n\n{nudge}"
+            if profile_ack_used:
+                # Turno de datos puro: acuse situado GENERADO (reconoce lo aportado y
+                # redirige con la pregunta del funnel en una sola voz); conector +
+                # pregunta literal solo como degradación (FUNNEL_LLM_TRANSITIONS).
+                from app.knowledge.current_turn import generate_funnel_transition_reply
+                _fresh_now = {
+                    f"{_f['fact_group']}.{_f['fact_key']}": _f["fact_value"]
+                    for _f in (_pre_validated or []) if _f.get("fact_value") is not None
+                }
+                reply = generate_funnel_transition_reply(
+                    message, _fresh_now, nudge, fallback=_join_with_nudge(reply, nudge),
+                )
+            else:
+                reply = _join_with_nudge(reply, nudge)
         else:
             asked_field_keys = []  # no nudge appended → no field was asked
+            if profile_ack_used:
+                # El acuse de perfil ahora es solo un conector ("Bien."). Si el nudge no
+                # emitió pregunta, garantiza que el turno lleve la siguiente pregunta del
+                # funnel (o el cierre) desde la MISMA fuente única que el guard —nunca un
+                # conector suelto—. Alinea la ruta del orquestador con la del worker.
+                from app.knowledge.current_turn import (
+                    generate_funnel_transition_reply,
+                    next_question_from_missing_facts,
+                )
+                _merged_ack = {
+                    f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+                    for r in (lead_memory_before.get("facts") or []) if r.get("fact_value")
+                }
+                _fresh_ack = {}
+                for _f in (_pre_validated or []):
+                    _merged_ack[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+                    _fresh_ack[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+                _next_q = next_question_from_missing_facts(_merged_ack)
+                if _next_q:
+                    reply = generate_funnel_transition_reply(
+                        message, _fresh_ack, _next_q, fallback=_join_with_nudge(reply, _next_q),
+                    )
 
     # Guard de léxico de vigencia sobre la respuesta final (todas las rutas): el bot
     # nunca emite "caduca/caducidad" al candidato.
@@ -2196,6 +2523,51 @@ def handle_message(payload: dict[str, Any]) -> dict[str, Any]:
             run_shadow(message, lead_memory_before, reply)
         except Exception as exc:
             log.warning("[MULTI_INTENT_SHADOW] no se pudo ejecutar: %s", exc)
+
+    # Shadow agéntico (controlled-agentic-profiling B3, design.md D3): compara la
+    # conducción del agente (AgentDecision, ya computada en la MISMA llamada del
+    # extractor unificado — cero costo extra) contra la decisión determinista del
+    # funnel. Read-only: no toca reply/labels/Nota IA. Flag-gated, nunca puede
+    # romper el turno (try/except, mismo patrón que MULTI_INTENT_SHADOW).
+    if _env_bool("AGENTIC_PROFILING_SHADOW", False) and _pre_extraction is not None:
+        try:
+            from app.knowledge.agent_decision_validator import build_shadow_log, validate_agent_decision
+            from app.knowledge.current_turn import next_question_from_missing_facts
+            from app.lead_memory.profile_extractor import missing_profile_fields
+
+            _known_before = {
+                f"{r['fact_group']}.{r['fact_key']}": r["fact_value"]
+                for r in (lead_memory_before.get("facts") or [])
+                if isinstance(r, dict) and r.get("fact_value")
+            }
+            _agent_decision = _pre_extraction.agent_decision
+            _deterministic_requires_human = bool(contract.get("requires_human"))
+            _validated = validate_agent_decision(
+                _agent_decision,
+                raw_message=message,
+                known_facts=_known_before,
+                deterministic_requires_human=_deterministic_requires_human,
+            )
+            _facts_now = dict(_known_before)
+            for _f in (_pre_validated or []):
+                if _f.get("fact_group") and _f.get("fact_key") and _f.get("fact_value") is not None:
+                    _facts_now[f"{_f['fact_group']}.{_f['fact_key']}"] = _f["fact_value"]
+            _deterministic_keys = {
+                f"{f['fact_group']}.{f['fact_key']}"
+                for f in (_pre_validated or [])
+                if f.get("fact_group") and f.get("fact_key")
+            }
+            log.info("[AGENTIC_SHADOW] %s", build_shadow_log(
+                conversation_key=conversation_key,
+                agent_decision=_agent_decision,
+                validated=_validated,
+                funnel_question=next_question_from_missing_facts(_facts_now),
+                funnel_missing_labels=missing_profile_fields(_facts_now),
+                deterministic_fact_keys=_deterministic_keys,
+                deterministic_requires_human=_deterministic_requires_human,
+            ))
+        except Exception as exc:
+            log.warning("[AGENTIC_SHADOW] no se pudo ejecutar: %s", exc)
 
     timings = {"total_ms": round((time.perf_counter() - started) * 1000, 2)}
     if rag_result and isinstance(rag_result.get("timings"), dict):

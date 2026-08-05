@@ -6,9 +6,17 @@ Dos responsabilidades:
    (PDF/txt/md), las trocea (`_split_text`) y las persiste como embeddings
    `BAAI/bge-m3` en la colección ChromaDB. El volumen ``.cache/`` (~2.4 GB con
    el modelo) NO se borra; ver constraint 7 en ``openspec/project.md``.
-2. **Recuperación y generación**: `retrieve_context_for_guardrail` (recupera +
-   rerank Cohere para el guardrail) y los clientes LLM Groq/Cohere
-   (`call_llm`, `call_groq_json`, …).
+2. **Recuperación y generación**: `retrieve_context_for_guardrail` (recupera
+   para el guardrail) y la generación LLM vía Gemini (`call_llm` →
+   `call_gemini_llm`; proveedor primario — Cohere retirado 2026-07-07).
+
+   TEMPORAL (2026-07-09): las funciones `call_groq_*` se RESTAURARON como
+   fallback de PRUEBA sobre `gemini_client.dispatch_*` mientras Gemini
+   resuelve una falla 503 "high demand" sostenida en gemini-3.5-flash (ambas
+   keys, primaria y backup) — ver openspec/changes/gemini-full-provider-migration
+   D1 (Gemini-único) y su nota de excepción temporal. Retirar de nuevo cuando
+   Gemini se estabilice o se contrate el tier pago. Groq sigue sin ser el
+   camino PRINCIPAL: solo entra si Gemini falla.
 
 Nota: la recuperación acotada por fuente autorizada (fail-closed de pago) vive
 en `app/knowledge/context_builder.py`, que reutiliza los helpers privados de
@@ -21,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
-import cohere
 import httpx
 from chromadb.config import Settings as ChromaSettings
 from groq import Groq, RateLimitError as GroqRateLimitError
@@ -59,43 +66,28 @@ CHUNK_SIZE = int(getattr(settings, "CHUNK_SIZE", os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP = int(getattr(settings, "CHUNK_OVERLAP", os.getenv("CHUNK_OVERLAP", "100")))
 TOP_K = int(getattr(settings, "TOP_K", os.getenv("TOP_K", "5")))
 
-# Provider LLM:
-# - groq
-# - cohere
-LLM_PROVIDER = getattr(
-    settings,
-    "LLM_PROVIDER",
-    os.getenv("LLM_PROVIDER", "groq"),
-).strip().lower()
-
-GROQ_MODEL = getattr(
-    settings,
-    "GROQ_MODEL",
-    os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-)
-
-GROQ_MAX_TOKENS = int(
-    getattr(settings, "GROQ_MAX_TOKENS", os.getenv("GROQ_MAX_TOKENS", "900"))
-)
-
-COHERE_MODEL = getattr(
-    settings,
-    "COHERE_MODEL",
-    os.getenv("COHERE_MODEL", "command-r-plus-08-2024"),
-)
-
-COHERE_MAX_TOKENS = int(
-    getattr(
-        settings,
-        "COHERE_MAX_TOKENS",
-        os.getenv("COHERE_MAX_TOKENS", str(GROQ_MAX_TOKENS)),
-    )
-)
-
 TEMPERATURE = float(getattr(settings, "TEMPERATURE", os.getenv("TEMPERATURE", "0.0")))
 
-GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+# TEMPORAL (2026-07-09): config Groq restaurada solo para el fallback de prueba
+# — ver docstring del módulo.
+GROQ_MODEL = getattr(settings, "GROQ_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+GROQ_MAX_TOKENS = int(getattr(settings, "GROQ_MAX_TOKENS", os.getenv("GROQ_MAX_TOKENS", "900")))
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+# TEMPORAL (2026-07-09): gpt-oss-120b (GROQ_MODEL) devuelve 400 json_validate_failed
+# con el schema extenso del extractor unificado (agent_decision anidado, conv 172
+# mensaje con 6+ datos). qwen/qwen3.6-27b sí existe en Groq (confirmado por el
+# usuario vs. mi suposición inicial errónea); el primer intento falló porque el
+# sufijo "/no_think" (válido para qwen3-32b) no aplica a esta generación — Qwen3.6
+# controla el razonamiento por el parámetro reasoning_effort, ya manejado en
+# _groq_call vía extra_body.
+GROQ_JSON_MODEL = os.getenv("GROQ_JSON_MODEL", "qwen/qwen3.6-27b")
+# TEMPORAL (2026-07-10): Whisper restaurado SOLO como fallback de audio ante el 503
+# sostenido de Gemini — dispatch_audio era el único camino sin red y todo audio caía
+# al guard "Recibí tu audio, pero no pude entenderlo". Whisper pierde jerga trailera
+# (fulero→futbol, bug conv 163) pero una transcripción imperfecta supera al guard;
+# Gemini nativo con glosario sigue siendo el camino primario.
+GROQ_WHISPER_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3")
+
 
 # Cohere Rerank.
 # Flujo:
@@ -105,12 +97,6 @@ GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b
 RERANK_ENABLED = str(
     getattr(settings, "RERANK_ENABLED", os.getenv("RERANK_ENABLED", "false"))
 ).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-COHERE_RERANK_MODEL = getattr(
-    settings,
-    "COHERE_RERANK_MODEL",
-    os.getenv("COHERE_RERANK_MODEL", "rerank-v4.0-pro"),
-)
 
 RERANK_INPUT_K = int(
     getattr(settings, "RERANK_INPUT_K", os.getenv("RERANK_INPUT_K", "20"))
@@ -439,7 +425,7 @@ def build_index(data_dir: str | None = None, db_dir: str | None = None):
         "embedding_model": EMBEDDING_MODEL,
         "extensions": sorted(list(set(INDEX_EXTENSIONS))),
         "rerank_enabled": RERANK_ENABLED,
-        "rerank_model": COHERE_RERANK_MODEL if RERANK_ENABLED else None,
+        "rerank_model": None,  # rerank retirado (Cohere fuera del ecosistema)
     }
 
 
@@ -447,149 +433,16 @@ def build_index(data_dir: str | None = None, db_dir: str | None = None):
 # Rerank
 # =========================
 
-def _extract_rerank_results(response: Any) -> list[Any]:
-    """
-    Extrae resultados de Cohere Rerank de forma tolerante.
-    Normalmente response.results trae objetos con index y relevance_score.
-    """
-    try:
-        results = getattr(response, "results", None)
-        if results is not None:
-            return list(results)
-    except Exception:
-        pass
-
-    try:
-        if isinstance(response, dict):
-            return response.get("results", []) or []
-    except Exception:
-        pass
-
-    return []
-
-
-def _get_rerank_result_index(result: Any) -> int | None:
-    idx = getattr(result, "index", None)
-
-    if idx is None and isinstance(result, dict):
-        idx = result.get("index")
-
-    if idx is None:
-        try:
-            document = getattr(result, "document", None)
-            if document is not None:
-                doc_id = getattr(document, "id", None)
-                if doc_id is not None:
-                    idx = doc_id
-        except Exception:
-            pass
-
-    if idx is None:
-        try:
-            if isinstance(result, dict):
-                document = result.get("document") or {}
-                idx = document.get("id")
-        except Exception:
-            pass
-
-    try:
-        return int(idx)
-    except Exception:
-        return None
-
-
-def _get_rerank_result_score(result: Any) -> float | None:
-    score = getattr(result, "relevance_score", None)
-
-    if score is None and isinstance(result, dict):
-        score = result.get("relevance_score")
-
-    try:
-        return float(score)
-    except Exception:
-        return None
-
-
 def _rerank_context_items(
     query: str,
     items: list[dict[str, Any]],
     top_n: int,
 ) -> list[dict[str, Any]]:
-    """
-    Reordena chunks recuperados por Chroma usando Cohere Rerank.
-    Si Cohere falla, devuelve los items originales para no romper el sistema.
-    """
-    if not RERANK_ENABLED:
-        return items[:top_n]
+    """Slice directo de los candidatos de Chroma. El rerank Cohere fue RETIRADO
+    (gemini-full-provider-migration D7: Cohere fuera del ecosistema; RERANK_ENABLED
+    nunca estuvo activo en ningún entorno)."""
+    return items[:top_n]
 
-    api_key = os.environ.get("COHERE_API_KEY")
-    if not api_key:
-        print("[rerank] RERANK_ENABLED=true pero falta COHERE_API_KEY. Usando Chroma directo.", flush=True)
-        return items[:top_n]
-
-    if not query or not items:
-        return items[:top_n]
-
-    try:
-        client = cohere.ClientV2(api_key=api_key)
-
-        documents: list[str] = []
-        for i, item in enumerate(items):
-            source = item.get("source") or "unknown"
-            text = (item.get("text") or "")[:RERANK_MAX_CHARS_PER_DOC]
-            documents.append(f"id: {i}\nsource: {source}\ntext: {text}")
-
-        top_n = min(top_n, len(documents))
-
-        print(
-            f"[rerank] Modelo: {COHERE_RERANK_MODEL} | input={len(documents)} | top_n={top_n}",
-            flush=True,
-        )
-
-        response = client.rerank(
-            model=COHERE_RERANK_MODEL,
-            query=query,
-            documents=documents,
-            top_n=top_n,
-        )
-
-        ranked_results = _extract_rerank_results(response)
-        reranked: list[dict[str, Any]] = []
-
-        for result in ranked_results:
-            idx = _get_rerank_result_index(result)
-            relevance_score = _get_rerank_result_score(result)
-
-            if idx is None or idx < 0 or idx >= len(items):
-                continue
-
-            item = dict(items[idx])
-
-            # Conservamos score original de Chroma para auditoría.
-            item["chroma_score"] = item.get("score")
-            item["rerank_score"] = relevance_score
-
-            # Compatibilidad: app.py y orchestrator.py filtran por item["score"].
-            # Si existe rerank_score, lo ponemos como score principal.
-            if relevance_score is not None:
-                item["score"] = relevance_score
-
-            reranked.append(item)
-
-        if reranked:
-            return reranked[:top_n]
-
-        print("[rerank] Cohere devolvió resultados vacíos. Usando Chroma directo.", flush=True)
-        return items[:top_n]
-
-    except Exception as exc:
-        print(f"[rerank] Error: {type(exc).__name__}: {exc}. Usando Chroma directo.", flush=True)
-        return items[:top_n]
-
-
-# =========================
-# Recuperación RAG
-# =========================
 
 def retrieve_context_for_guardrail(question: str, top_k: int | None = None) -> list[dict[str, Any]]:
     query = _normalize_text(question)
@@ -652,16 +505,8 @@ def retrieve_context_for_guardrail(question: str, top_k: int | None = None) -> l
 
 
 # =========================
-# LLM remoto: Groq / Cohere
+# LLM remoto: Gemini (proveedor único)
 # =========================
-
-def _reasoning_suppression_suffix(model: str) -> str:
-    """Interruptor `/no_think` para modelos qwen reasoning (qwen3): evita que gasten
-    el budget de tokens en `<think>…</think>` y trunquen la respuesta. No-op para
-    modelos no-qwen (70b/otros). Solo se aplica en GENERACIÓN de prosa, nunca en
-    `call_groq_json` (extracción/clasificación), para no ensuciar el JSON."""
-    return " /no_think" if "qwen" in (model or "").lower() else ""
-
 
 def _llm_system_message() -> str:
     return (
@@ -674,46 +519,10 @@ def _llm_system_message() -> str:
     )
 
 
-def _extract_cohere_text(response: Any) -> str:
-    """
-    Extrae texto de respuestas Cohere SDK v2 de forma tolerante.
-
-    En Cohere v2 normalmente se usa:
-        response.message.content[0].text
-
-    Pero dejamos extracción flexible para evitar romper por pequeñas diferencias
-    de versión del SDK.
-    """
-    try:
-        content = response.message.content
-
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                text = getattr(item, "text", None)
-                if text:
-                    parts.append(str(text))
-                    continue
-
-                if isinstance(item, dict) and item.get("text"):
-                    parts.append(str(item["text"]))
-                    continue
-
-            return "\n".join(parts).strip()
-
-        if isinstance(content, str):
-            return content.strip()
-    except Exception:
-        pass
-
-    try:
-        text = getattr(response, "text", None)
-        if text:
-            return str(text).strip()
-    except Exception:
-        pass
-
-    return ""
+def _reasoning_suppression_suffix(model: str) -> str:
+    """Interruptor `/no_think` para modelos qwen reasoning: evita que gasten el
+    budget de tokens en `<think>…</think>`. No-op para modelos no-qwen."""
+    return " /no_think" if "qwen" in (model or "").lower() else ""
 
 
 def _groq_call(
@@ -729,19 +538,25 @@ def _groq_call(
 ) -> str:
     """Ejecuta una llamada a Groq y devuelve el contenido de la respuesta.
 
-    Punto único de construcción del cliente; los callers públicos implementan
-    el patrón de fallback (primary → backup) sobre este helper.
+    TEMPORAL (2026-07-09): restaurado como fallback de prueba sobre Gemini — ver
+    docstring del módulo. Punto único de construcción del cliente; los callers
+    públicos implementan el patrón de fallback (primary → backup → org2 → org3)
+    sobre este helper.
     """
     timeout_secs = float(os.getenv(timeout_key, timeout_default))
     timeout = httpx.Timeout(timeout_secs, connect=5.0)
-    kwargs: dict = dict(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    kwargs: dict = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    _lower_model = (model or "").lower()
+    if "gpt-oss" in _lower_model:
+        kwargs["extra_body"] = {"reasoning_effort": "low", "reasoning_format": "hidden"}
+    elif "qwen3.6" in _lower_model or "qwen3-6" in _lower_model:
+        # Qwen3.6 controla el modo de razonamiento por parámetro (reasoning_effort),
+        # no por el sufijo de texto "/no_think" que usa qwen3 (versión anterior) —
+        # sin esto el modelo emite <think> y rompe json_object mode (visto en vivo:
+        # 400 json_validate_failed con failed_generation vacío).
+        kwargs["extra_body"] = {"reasoning_effort": "none", "reasoning_format": "hidden"}
     with httpx.Client(timeout=timeout) as http_client:
         client = Groq(api_key=api_key, http_client=http_client)
         completion = client.chat.completions.create(**kwargs)
@@ -761,161 +576,91 @@ def _groq_with_fallback(
     timeout_key: str = "GROQ_TIMEOUT_SECONDS",
     timeout_default: str = "8",
     org2_key: str | None = None,
+    org3_key: str | None = None,
 ) -> str:
-    """Llama a _groq_call con primary_key; si devuelve RateLimitError y hay
-    backup_key, reintenta con ella. Si backup también falla y hay org2_key
-    (organización Groq distinta con cuota TPD independiente), reintenta una vez más.
-    Registra cada fallback en el log.
-    """
+    """Recorre las 4 keys Groq (primary → backup → org2 → org3, cada una una
+    organización con cuota TPD independiente). Ante RateLimitError pasa a la
+    siguiente; si se agotan todas, propaga el último error."""
     call_kwargs = dict(
-        json_mode=json_mode,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout_key=timeout_key,
-        timeout_default=timeout_default,
+        json_mode=json_mode, temperature=temperature, max_tokens=max_tokens,
+        timeout_key=timeout_key, timeout_default=timeout_default,
     )
-    try:
-        return _groq_call(primary_key, messages, model, **call_kwargs)
-    except GroqRateLimitError as exc:
-        if not backup_key:
-            raise
-        print(f"[groq-fallback] cuota primaria agotada, usando BACKUP — {fn_name}", flush=True)
+    chain = [(lbl, k) for lbl, k in (
+        ("PRIMARY", primary_key), ("BACKUP", backup_key), ("ORG2", org2_key), ("ORG3", org3_key),
+    ) if k]
+    last_exc: GroqRateLimitError | None = None
+    for i, (label, key) in enumerate(chain):
         try:
-            return _groq_call(backup_key, messages, model, **call_kwargs)
-        except GroqRateLimitError as exc2:
-            print(f"[groq-fallback] BACKUP también agotada — {fn_name}: {exc2}", flush=True)
-            if org2_key:
-                print(f"[groq-fallback] usando ORG2 — {fn_name}", flush=True)
-                return _groq_call(org2_key, messages, model, **call_kwargs)
-            raise exc2
+            return _groq_call(key, messages, model, **call_kwargs)
+        except GroqRateLimitError as exc:
+            last_exc = exc
+            nxt = chain[i + 1][0] if i + 1 < len(chain) else None
+            if nxt:
+                print(f"[groq-fallback] {label} agotada, usando {nxt} — {fn_name}", flush=True)
+            else:
+                print(f"[groq-fallback] {label} agotada, sin más keys — {fn_name}: {exc}", flush=True)
+    raise last_exc  # type: ignore[misc]
 
 
 def call_groq_llm(prompt: str) -> str:
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini."""
     api_key = os.environ.get("GROQ_API_KEY")
-
     if not api_key:
         return "Error: falta configurar GROQ_API_KEY."
-
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
-    # GROQ_LLM_HISTORY_TURNS: el orquestador ya acota el historial a messages[-4:]
-    # con 180 chars por mensaje, por lo que el prompt no crece sin cota. Esta
-    # variable queda disponible para documentación/ajuste futuro; no se aplica
-    # truncado adicional aquí porque el historial ya es bounded por diseño.
-    # _history_turns = _to_int(os.environ.get("GROQ_LLM_HISTORY_TURNS"), 6)
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     messages = [
         {"role": "system", "content": _llm_system_message() + _reasoning_suppression_suffix(GROQ_MODEL)},
         {"role": "user", "content": prompt},
     ]
-    print(f"[groq] Modelo: {GROQ_MODEL}", flush=True)
     try:
         return _groq_with_fallback(
             api_key, backup_key, "call_groq_llm", messages, GROQ_MODEL,
-            temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS,
-            org2_key=org2_key,
+            temperature=TEMPERATURE, max_tokens=GROQ_MAX_TOKENS, org2_key=org2_key, org3_key=org3_key,
         )
     except Exception as exc:
         print(f"[groq] Error: {type(exc).__name__}: {exc}", flush=True)
         return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
 
 
-def call_cohere_llm(prompt: str) -> str:
-    api_key = os.environ.get("COHERE_API_KEY")
-    model = os.environ.get("COHERE_MODEL", COHERE_MODEL)
-    max_tokens = _to_int(os.environ.get("COHERE_MAX_TOKENS"), COHERE_MAX_TOKENS)
-
-    if not api_key:
-        print("[cohere] Falta COHERE_API_KEY. Intentando fallback Groq.", flush=True)
-        if os.environ.get("GROQ_API_KEY"):
-            return call_groq_llm(prompt)
-        return "Error: falta configurar COHERE_API_KEY."
-
-    try:
-        client = cohere.ClientV2(api_key=api_key)
-
-        print(f"[cohere] Modelo: {model}", flush=True)
-
-        response = client.chat(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": _llm_system_message(),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=max_tokens,
-        )
-
-        text = _extract_cohere_text(response)
-
-        if not text:
-            raise RuntimeError("Respuesta vacía desde Cohere.")
-
-        return text
-
-    except Exception as exc:
-        print(f"[cohere] Error: {type(exc).__name__}: {exc}", flush=True)
-
-        # Fallback a Groq si está configurado.
-        if os.environ.get("GROQ_API_KEY"):
-            print("[cohere] Usando fallback Groq.", flush=True)
-            return call_groq_llm(prompt)
-
-        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
-
-
 def call_groq_json(prompt: str, system_message: str, *, temperature: float = 0.0,
                    model: str | None = None) -> str:
-    """Llama a Groq en JSON mode para clasificación determinista.
-
-    Devuelve el string JSON crudo (el caller lo parsea/valida). Distinta de
-    call_llm: usa response_format json_object, temperatura ~0 y un system message
-    propio (no el de Mundo conversacional). No reemplaza call_llm.
-
-    model: por defecto GROQ_MODEL. Para clasificación conviene un modelo chico
-    (ej. llama-3.3-70b-versatile).
-    """
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini. Devuelve el string
+    JSON crudo (el caller lo parsea/valida)."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return '{"error": "missing_groq_api_key"}'
-
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
+    effective_model = model or GROQ_JSON_MODEL
+    system_message = system_message + _reasoning_suppression_suffix(effective_model)
     messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": prompt},
     ]
     try:
         return _groq_with_fallback(
-            api_key, backup_key, "call_groq_json", messages, model or GROQ_MODEL,
+            api_key, backup_key, "call_groq_json", messages, effective_model,
             json_mode=True, temperature=temperature, max_tokens=GROQ_MAX_TOKENS,
             timeout_key="GROQ_JSON_TIMEOUT_SECONDS", timeout_default="10",
-            org2_key=org2_key,
+            org2_key=org2_key, org3_key=org3_key,
         )
-    except GroqRateLimitError:
-        raise
     except Exception as exc:
         print(f"[groq_json] Error: {type(exc).__name__}: {exc}", flush=True)
         return f'{{"error": "{type(exc).__name__}"}}'
 
 
 def call_groq_with_system(system: str, user: str, *, temperature: float | None = None, max_tokens: int = 300) -> str:
-    """Groq conversational call con system prompt arbitrario (no JSON mode).
-
-    Distinta de call_llm: acepta system prompt externo en lugar de _llm_system_message().
-    Usada para respuestas generadas por el LLM siguiendo reglas de persona_config sin
-    pasar por el pipeline RAG completo (ej. descalificación por edad).
-    """
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini. Acepta system
+    prompt externo en lugar de _llm_system_message()."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     t = temperature if temperature is not None else TEMPERATURE
     messages = [
         {"role": "system", "content": system + _reasoning_suppression_suffix(GROQ_MODEL)},
@@ -924,53 +669,11 @@ def call_groq_with_system(system: str, user: str, *, temperature: float | None =
     try:
         return _groq_with_fallback(
             api_key, backup_key, "call_groq_with_system", messages, GROQ_MODEL,
-            temperature=t, max_tokens=max_tokens,
-            org2_key=org2_key,
+            temperature=t, max_tokens=max_tokens, org2_key=org2_key, org3_key=org3_key,
         )
     except Exception as exc:
         print(f"[groq_with_system] Error: {type(exc).__name__}: {exc}", flush=True)
         return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
-
-
-def call_groq_transcribe(audio_bytes: bytes, filename: str = "audio.ogg") -> str:
-    """Transcribe un archivo de audio con Groq Whisper; devuelve el texto o '' si falla.
-
-    Sigue el mismo patrón de fallback a GROQ_API_KEY_BACKUP que las demás funciones Groq.
-    """
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("[groq_transcribe] Falta GROQ_API_KEY", flush=True)
-        return ""
-    if not audio_bytes:
-        return ""
-
-    backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
-
-    def _transcribe(key: str) -> str:
-        with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as http_client:
-            client = Groq(api_key=key, http_client=http_client)
-            result = client.audio.transcriptions.create(
-                file=(filename, audio_bytes),
-                model=GROQ_WHISPER_MODEL,
-                response_format="text",
-            )
-        # SDK devuelve str directamente con response_format="text"
-        return str(result).strip() if result else ""
-
-    try:
-        return _transcribe(api_key)
-    except GroqRateLimitError:
-        if not backup_key:
-            raise
-        print("[groq-fallback] cuota primaria agotada, usando BACKUP — call_groq_transcribe", flush=True)
-        try:
-            return _transcribe(backup_key)
-        except Exception as exc2:
-            print(f"[groq_transcribe] BACKUP falló: {type(exc2).__name__}: {exc2}", flush=True)
-            return ""
-    except Exception as exc:
-        print(f"[groq_transcribe] Error: {type(exc).__name__}: {exc}", flush=True)
-        return ""
 
 
 # ── Prompts de visión ────────────────────────────────────────────────────────
@@ -980,6 +683,13 @@ _VISION_PROMPT_IMAGE = (
     "licencia, CURP, comprobante u otro documento) y extrae ÚNICAMENTE los datos "
     "PRESENTES y verificables en ella. Campos posibles: nombre, fecha_nacimiento, "
     "ciudad, licencia (A, B o E), apto_medico, documento.\n"
+    "- SIEMPRE emite primero una línea 'tipo_documento: <valor>' clasificando la imagen "
+    "con EXACTAMENTE uno de: licencia_federal, apto_medico, ine, carta_laboral, "
+    "semanas_imss, comprobante_pago_renovacion, curp, rfc, acta_nacimiento, nss, "
+    "comprobante_domicilio, comprobante_estudios, desconocido. Si la imagen no es un "
+    "documento (persona, camión, paisaje, meme) usa 'desconocido'.\n"
+    "- SIEMPRE emite después una línea 'legible: si' o 'legible: no' (no si está "
+    "borrosa, cortada o no se distingue el texto).\n"
     "REGLAS ESTRICTAS:\n"
     "- Devuelve SOLO los campos que aparezcan en la imagen, uno por línea, en formato "
     "'clave: valor'. NO menciones, expliques ni enumeres los datos ausentes. NO "
@@ -1056,14 +766,9 @@ def call_groq_vision(
     is_sticker: bool = False,
     mime_type: str = "image/jpeg",
 ) -> str:
-    """Procesa una imagen con un modelo de visión Groq y devuelve texto en español.
-
-    - ``is_sticker=True``: usa el prompt de inferencia de intención.
-    - ``is_sticker=False`` (default): usa el prompt de extracción de datos de funnel.
-
-    Aplica el mismo patrón de fallback de claves (primaria → BACKUP → ORG2) que
-    el resto de las funciones Groq. Devuelve string vacío ante fallo o sin contenido útil.
-    """
+    """TEMPORAL (2026-07-09): fallback de prueba sobre Gemini para visión.
+    Aplica el mismo patrón de fallback de claves (primaria → BACKUP → ORG2 →
+    ORG3). Devuelve string vacío ante fallo o sin contenido útil."""
     import base64
 
     api_key = os.environ.get("GROQ_API_KEY")
@@ -1075,21 +780,14 @@ def call_groq_vision(
 
     backup_key = os.environ.get("GROQ_API_KEY_BACKUP")
     org2_key = os.environ.get("GROQ_API_KEY_ORG2") or None
+    org3_key = os.environ.get("GROQ_API_KEY_ORG3") or None
     system_prompt = _VISION_PROMPT_STICKER if is_sticker else _VISION_PROMPT_IMAGE
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:{mime_type};base64,{b64}"
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": data_url},
-                }
-            ],
-        },
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": data_url}}]},
     ]
 
     def _call(key: str) -> str:
@@ -1098,10 +796,7 @@ def call_groq_vision(
         with httpx.Client(timeout=timeout) as http_client:
             client = Groq(api_key=key, http_client=http_client)
             completion = client.chat.completions.create(
-                model=GROQ_VISION_MODEL,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=200,
+                model=GROQ_VISION_MODEL, messages=messages, temperature=0.0, max_tokens=200,
             )
         return (completion.choices[0].message.content or "").strip()
 
@@ -1122,6 +817,21 @@ def call_groq_vision(
                     result = _call(org2_key)
                 except Exception as exc3:
                     print(f"[groq_vision] ORG2 falló: {type(exc3).__name__}: {exc3}", flush=True)
+                    if org3_key:
+                        print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                        try:
+                            result = _call(org3_key)
+                        except Exception as exc4:
+                            print(f"[groq_vision] ORG3 falló: {type(exc4).__name__}: {exc4}", flush=True)
+                            return ""
+                    else:
+                        return ""
+            elif org3_key:
+                print("[groq-fallback] usando ORG3 — call_groq_vision", flush=True)
+                try:
+                    result = _call(org3_key)
+                except Exception as exc3:
+                    print(f"[groq_vision] ORG3 falló: {type(exc3).__name__}: {exc3}", flush=True)
                     return ""
             else:
                 return ""
@@ -1138,17 +848,90 @@ def call_groq_vision(
     return result
 
 
+def call_groq_transcribe(audio_bytes: bytes, filename: str = "audio.ogg") -> str:
+    """TEMPORAL (2026-07-10): fallback de audio sobre Gemini nativo — Whisper
+    restaurado del pre-migración (af0fa69) SOLO como red ante el 503 sostenido.
+
+    Recorre las 4 keys Groq (primaria → BACKUP → ORG2 → ORG3) ante RateLimitError.
+    Devuelve el texto transcrito o '' ante fallo (el caller cae al audio guard).
+    Whisper no conoce el glosario trailero (fulero→futbol, conv 163): transcripción
+    imperfecta > guard, pero Gemini nativo sigue siendo el camino primario.
+    """
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        print("[groq_transcribe] Falta GROQ_API_KEY", flush=True)
+        return ""
+    if not audio_bytes:
+        return ""
+
+    keys = [("PRIMARY", api_key)]
+    for label, env in (("BACKUP", "GROQ_API_KEY_BACKUP"),
+                       ("ORG2", "GROQ_API_KEY_ORG2"),
+                       ("ORG3", "GROQ_API_KEY_ORG3")):
+        val = os.environ.get(env)
+        if val:
+            keys.append((label, val))
+
+    def _transcribe(key: str) -> str:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=5.0)) as http_client:
+            client = Groq(api_key=key, http_client=http_client)
+            result = client.audio.transcriptions.create(
+                file=(filename, audio_bytes),
+                model=GROQ_WHISPER_MODEL,
+                response_format="text",
+                # Sin language fijado Whisper auto-detecta y ANGLICANIZA nombres
+                # hispanos (bug en vivo conv 174: "Elizondo" → "Ellison").
+                language="es",
+                # El prompt de Whisper es SESGO de vocabulario (no instrucción):
+                # orienta jerga del dominio y apellidos hispanos frecuentes para
+                # que no los divida ("el lizondo") ni los anglicanice.
+                prompt=(
+                    "Candidato operador de tractocamión en México. Jerga: fulero, "
+                    "full, sencillo, caja seca, quinta rueda, torton, rabón, tracto, "
+                    "apto médico, licencia federal, Transmontes, La Laguna, Torreón, "
+                    "Gómez Palacio, Lerdo. Nombres y apellidos hispanos: Elizondo, "
+                    "Elías, Eliezer, Munera, Anguiano, Zúñiga, Garza."
+                ),
+            )
+        # SDK devuelve str directamente con response_format="text"
+        return str(result).strip() if result else ""
+
+    for i, (label, key) in enumerate(keys):
+        try:
+            return _transcribe(key)
+        except GroqRateLimitError as exc:
+            if i + 1 < len(keys):
+                print(f"[groq-fallback] {label} agotada, siguiente key — call_groq_transcribe", flush=True)
+                continue
+            print(f"[groq_transcribe] todas las keys agotadas: {exc}", flush=True)
+            return ""
+        except Exception as exc:
+            print(f"[groq_transcribe] Error ({label}): {type(exc).__name__}: {exc}", flush=True)
+            return ""
+    return ""
+
+
+def call_gemini_llm(prompt: str) -> str:
+    """Generación RAG vía Gemini (proveedor PRIMARIO) con el system message de
+    Mundo y config propia GEMINI_* (no se reciclan constantes GROQ_*).
+
+    El fallback a Groq ante fallo de Gemini vive DENTRO de `dispatch_generation`
+    (gemini_client.py — capa única, evita doble fallback); aquí solo se preserva
+    un último catch-all por si esa capa también propagara algo inesperado."""
+    from app.gemini_client import GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE, dispatch_generation
+
+    try:
+        return dispatch_generation(
+            _llm_system_message(), prompt,
+            temperature=GEMINI_TEMPERATURE, max_tokens=GEMINI_MAX_TOKENS,
+        )
+    except Exception as exc:
+        print(f"[gemini] Error: {exc}", flush=True)
+        return "Tuve un problema al generar la respuesta. Por favor intenta de nuevo."
+
+
 def call_llm(prompt: str) -> str:
-    provider = os.environ.get("LLM_PROVIDER", LLM_PROVIDER).strip().lower()
-
-    if provider == "cohere":
-        return call_cohere_llm(prompt)
-
-    if provider == "groq":
-        return call_groq_llm(prompt)
-
-    print(
-        f"[llm] LLM_PROVIDER desconocido: {provider}. Usando Groq por fallback.",
-        flush=True,
-    )
-    return call_groq_llm(prompt)
+    # Gemini es el proveedor ÚNICO (gemini-full-provider-migration, 2026-07-07):
+    # Groq y Cohere ya no forman parte del ecosistema. Sus funciones legacy de abajo
+    # se retiran físicamente en D7 tras la verificación en vivo.
+    return call_gemini_llm(prompt)

@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, ORJSONResponse
 from pydantic import BaseModel
 
 import asyncio
-from .indexer import build_index, call_llm, retrieve_context_for_guardrail, _to_int, call_groq_transcribe, call_groq_vision
+from .indexer import build_index, call_llm, retrieve_context_for_guardrail, _to_int
 from .graphs.hr_graph import run_hr_graph_message
 from .db import get_conn, make_conversation_key
 from .persona_config import SYSTEM_PROMPT
@@ -530,29 +530,77 @@ def _chatwoot_has_media(payload: dict) -> bool:
     return False
 
 
-def _detect_audio_url(payload: dict) -> str | None:
-    """Devuelve la data_url del primer adjunto de tipo audio, o None si no hay audio.
+_AUDIO_EXT_TO_MIME = {
+    ".mp3": "audio/mpeg",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".webm": "audio/webm",
+    ".amr": "audio/amr",
+}
 
-    Chatwoot expone file_type=="audio" para notas de voz de WhatsApp.
-    Revisa tanto la ruta top-level como la ruta anidada en message.attachments.
+
+def _attachment_url_ext(url: str) -> str:
+    path = (url or "").lower().split("?", 1)[0].rsplit("/", 1)[-1]
+    if "." not in path:
+        return ""
+    return "." + path.rsplit(".", 1)[-1]
+
+
+def _attachment_content_type(a: dict) -> str:
+    return str(
+        a.get("content_type")
+        or a.get("contentType")
+        or a.get("file_content_type")
+        or a.get("mime_type")
+        or a.get("mimeType")
+        or ""
+    ).lower()
+
+
+def _detect_audio_attachment(payload: dict) -> tuple[str | None, str | None]:
+    """Devuelve (url, mime_type) del primer audio, o (None, None).
+
+    Chatwoot normalmente expone file_type=="audio", pero según canal/conector puede
+    llegar como voice/recording o como file con content_type/URL de audio.
+    Revisa tanto la ruta top-level como message.attachments.
     """
-    def _find_audio(items) -> str | None:
+    def _find_audio(items) -> tuple[str | None, str | None]:
         if not isinstance(items, list):
-            return None
+            return None, None
         for a in items:
-            if isinstance(a, dict) and a.get("file_type") == "audio":
-                url = a.get("data_url") or a.get("thumb_url")
-                if url:
-                    return url
-        return None
+            if not isinstance(a, dict):
+                continue
+            ft = str(a.get("file_type") or a.get("fileType") or "").lower()
+            url = a.get("data_url") or a.get("download_url") or a.get("file_url") or a.get("thumb_url") or ""
+            ctype = _attachment_content_type(a)
+            ext = _attachment_url_ext(url)
+            is_audio = (
+                ft in {"audio", "voice", "voice_message", "recording"}
+                or ctype.startswith("audio/")
+                or ext in _AUDIO_EXT_TO_MIME
+            )
+            if is_audio and url:
+                return url, ctype if ctype.startswith("audio/") else _AUDIO_EXT_TO_MIME.get(ext)
+        return None, None
 
     result = _find_audio(payload.get("attachments"))
-    if result:
+    if result[0]:
         return result
     message = payload.get("message")
     if isinstance(message, dict):
         return _find_audio(message.get("attachments"))
-    return None
+    return None, None
+
+
+def _detect_audio_url(payload: dict) -> str | None:
+    """Devuelve la URL del primer adjunto de audio, o None si no hay audio."""
+    return _detect_audio_attachment(payload)[0]
 
 
 def _detect_visual_attachment(payload: dict) -> tuple[str | None, str]:
@@ -1140,12 +1188,15 @@ async def chatwoot_webhook(
 
     # ── media_guard (G4): attachments → rama audio (transcripción) o reject genérico ──
     # Va ANTES de empty_content: los mensajes solo-media traen content vacío.
+    # vision_doc: clasificación del documento del expediente (si el adjunto es uno);
+    # viaja en el item encolado para que el worker registre la recepción y acuse.
+    vision_doc: dict | None = None
     _audio_url = _detect_audio_url(payload)
     if _audio_url or _chatwoot_has_media(payload):
         if not account_id or not conversation_id:
             return {"status": "ignored", "reason": "media_without_ids"}
 
-        # ── Rama audio: descargar + transcribir con Groq Whisper ──
+        # ── Rama audio: descargar + transcribir con Gemini nativo ──
         if _audio_url:
             transcribed_text = ""
             transcribe_error = None
@@ -1156,13 +1207,16 @@ async def chatwoot_webhook(
                     resp = await hc.get(_audio_url, headers=headers)
                     resp.raise_for_status()
                     audio_bytes = resp.content
-                # filename con extensión para que Whisper detecte el codec
-                # .oga (WhatsApp) no está en la lista de Groq; se normaliza a .ogg (mismo codec)
-                fname = _audio_url.split("?")[0].split("/")[-1] or "audio.ogg"
-                if fname.endswith(".oga"):
-                    fname = fname[:-4] + ".ogg"
+                # Gemini audio nativo (gemini-full-provider-migration B5): transcribe
+                # con el glosario trailero en el prompt — cierra el bug de Whisper
+                # "fulero"→"futbol" (conv 163). mime_type desde la extensión.
+                _audio_url2, _detected_mime = _detect_audio_attachment(payload)
+                _aname = (_audio_url2 or _audio_url).split("?")[0].split("/")[-1].lower()
+                _ext = "." + _aname.rsplit(".", 1)[-1] if "." in _aname else ""
+                _amime = _detected_mime or _AUDIO_EXT_TO_MIME.get(_ext) or "audio/ogg"
+                from app.gemini_client import dispatch_audio
                 transcribed_text = await asyncio.to_thread(
-                    call_groq_transcribe, audio_bytes, fname
+                    dispatch_audio, audio_bytes, mime_type=_amime
                 )
             except Exception as exc:
                 transcribe_error = str(exc)
@@ -1234,10 +1288,15 @@ async def chatwoot_webhook(
                         mime_type = "image/gif"
                     else:
                         mime_type = "image/jpeg"
+                    # Visión Gemini-único (gemini-full-provider-migration): ante
+                    # fallo el dispatch devuelve '' → media guard acotado.
+                    from app.gemini_client import dispatch_vision
+                    from app.indexer import _VISION_PROMPT_IMAGE, _VISION_PROMPT_STICKER
+                    _vision_prompt = _VISION_PROMPT_STICKER if att_kind == "sticker" else _VISION_PROMPT_IMAGE
                     vision_text = await asyncio.to_thread(
-                        call_groq_vision,
+                        dispatch_vision,
                         image_bytes,
-                        is_sticker=(att_kind == "sticker"),
+                        _vision_prompt,
                         mime_type=mime_type,
                     )
                 except Exception as exc:
@@ -1261,9 +1320,22 @@ async def chatwoot_webhook(
                     flush=True,
                 )
 
-                if len(vision_text) >= 3:
+                # Expediente (document-expediente-vision-v2 B1): separar la clasificación
+                # tipo_documento/legible del texto de perfilamiento. El registro y el
+                # acuse los hace el worker (vision_doc viaja en el item encolado).
+                from .lead_memory.expediente import parse_vision_classification
+                _clean_text, _doc_tipo, _doc_legible = parse_vision_classification(vision_text)
+                if _doc_tipo:
+                    vision_doc = {"tipo": _doc_tipo, "legible": _doc_legible}
+
+                if len(_clean_text) >= 3:
                     # Texto válido → sobreescribir content y continuar el pipeline normal
-                    content = vision_text
+                    content = _clean_text
+                elif _doc_tipo:
+                    # Documento del expediente sin texto de perfilamiento (p. ej. CURP,
+                    # o ilegible): encolar con marcador neutro; el worker registra la
+                    # recepción y responde el acuse (no el media guard enlatado).
+                    content = "[documento recibido]"
                 else:
                     # Visión no devolvió nada útil → fallback acotado y cortar
                     sent = False
@@ -1387,6 +1459,7 @@ async def chatwoot_webhook(
                     "phone": contact.get("phone"),
                     "channel_label": channel_label,
                     "content": content,
+                    "vision_doc": vision_doc,
                 }
             )
 
@@ -1399,7 +1472,11 @@ async def chatwoot_webhook(
                         "message_id": message_id,
                         "channel_user_id": channel_user_id,
                         "debounce_seconds": queued.get("debounce_seconds"),
-                        "content_preview": content[:300],
+                        # Privacidad (expediente B2): los datos extraídos de un documento
+                        # NO van al log en claro; solo el tipo clasificado.
+                        "content_preview": (
+                            f"[documento: {vision_doc['tipo']}]" if vision_doc else content[:300]
+                        ),
                     },
                     ensure_ascii=False,
                 ),
@@ -1488,6 +1565,7 @@ async def chatwoot_webhook(
                 conversation_id=conversation_id,
                 fallback_last_message=content,
                 channel_label=channel_label,
+                current_risk_level=str(result.get("risk_level") or "low"),
             )
             labels = note_sync.get("labels") or []
             labels_applied = bool(note_sync.get("ok"))

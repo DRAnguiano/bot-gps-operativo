@@ -103,10 +103,12 @@ def test_ack_no_confirma_vigente_sobre_no_respuesta():
 
 
 def test_ack_si_confirma_vencimiento_valido():
+    # Un vencimiento válido de apto completa el perfil → el turno emite el RESUMEN de
+    # confirmación (gemini-natural-recruiter D6) antes del cierre, sin eco robótico.
     current = {"medical.apto_expiration_text": "vence en 2 años"}
     merged = {**_COMPLETE, **current}
     reply = build_current_turn_ack("vence en dos años", merged, pre_current_facts=current)
-    assert "apto médico vigente" in reply.lower()
+    assert "¿Es correcto?" in reply  # resumen de confirmación, no cierre directo
 
 
 # ── gate de perfil_listo (regresión del bug) ─────────────────────────────────

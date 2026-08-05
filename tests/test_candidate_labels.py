@@ -59,16 +59,17 @@ SENCILLO_FACTS = {
 # ── catálogo oficial ──────────────────────────────────────────────────────────
 
 def test_official_labels_count():
-    assert len(OFFICIAL_LABELS) == 24
+    assert len(OFFICIAL_LABELS) == 27
 
 
 def test_official_labels_contains_expected():
     expected = {
         "aclaracion_pendiente", "bot_activo", "cecati_sugerido",
         "considerar_escuelita_transmontes", "considerar_operador_b1",
-        "documentos", "falta_apto", "falta_ciudad", "falta_experiencia",
-        "falta_licencia", "falta_unidad", "foraneo", "jerga_ambigua",
-        "llamada_pendiente", "local_laguna", "objetivo_full_sencillo",
+        "descartado_edad", "documentos", "falta_apto", "falta_ciudad",
+        "falta_experiencia", "falta_licencia", "falta_unidad", "foraneo",
+        "insistencia", "jerga_ambigua", "llamada_pendiente", "local_laguna",
+        "objetivo_full", "objetivo_sencillo",
         "perfil_listo", "reingreso_verificar", "requiere_agente",
         "requiere_revision_ch", "riesgo_alto", "seguimiento",
         "urgente", "validar_traslado",
@@ -248,9 +249,10 @@ def test_local_y_foraneo_son_mutuamente_excluyentes():
 
 
 def test_local_laguna_con_sufijo_de_estado():
-    # "Gómez Palacio, Durango" / "Torreón Coahuila" siguen siendo locales (catálogo
-    # por contención, normalizado sin acentos).
-    for city in ("Gómez Palacio, Durango", "torreon coahuila", "Cd. Lerdo"):
+    # Alias del catálogo ZML con sufijo de estado siguen siendo locales (resueltos vía
+    # normalize_zm_laguna_city antes del check canónico; bug de producción corregido en
+    # auditoría 2026-07-06: antes se comparaba el texto crudo, sin resolver alias).
+    for city in ("torreon coahuila", "Torreón Coahuila", "cd lerdo", "Cd Lerdo"):
         result = calculate_candidate_labels(_ctx({"candidate.city": city}))
         assert "local_laguna" in result, city
         assert "foraneo" not in result, city
@@ -568,16 +570,23 @@ def test_sql_primary_path_parses_pg_array_with_ghost():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TRICHOTOMY = {
-    "objetivo_full_sencillo",
+    "objetivo_full",
+    "objetivo_sencillo",
     "considerar_escuelita_transmontes",
     "cecati_sugerido",
 }
 
 
-def test_objetivo_full_sencillo_desde_vehicle_type_confirmado():
+def test_objetivo_sencillo_desde_vehicle_type_confirmado():
     result = calculate_candidate_labels(_ctx({"experience.vehicle_type": "sencillo"}))
-    assert "objetivo_full_sencillo" in result
-    assert not (TRICHOTOMY - {"objetivo_full_sencillo"} & set(result))
+    assert "objetivo_sencillo" in result
+    assert not (TRICHOTOMY - {"objetivo_sencillo"} & set(result))
+
+
+def test_objetivo_full_desde_vehicle_type_confirmado():
+    result = calculate_candidate_labels(_ctx({"experience.vehicle_type": "full"}))
+    assert "objetivo_full" in result
+    assert not (TRICHOTOMY - {"objetivo_full"} & set(result))
 
 
 def test_non_target_vehicle_emite_escuelita_y_canaliza():
@@ -603,7 +612,8 @@ def test_vehicle_type_confirmado_gana_sobre_senales_previas():
         "experience.road_experience": "none",
         "experience.vehicle_type_pending": "trailer",
     }))
-    assert "objetivo_full_sencillo" in result
+    assert "objetivo_full" in result
+    assert "objetivo_sencillo" not in result
     assert "considerar_escuelita_transmontes" not in result
     assert "cecati_sugerido" not in result
     assert "aclaracion_pendiente" not in result

@@ -35,3 +35,17 @@ def enviar_pendientes(self) -> dict[str, Any]:
     except Exception as exc:
         log.error("[BEAT_SENDER] Error: %s", exc)
         raise self.retry(exc=exc, countdown=60)
+
+
+@celery_app.task(name="expediente.purga_retencion", bind=True, max_retries=2)
+def purga_retencion(self) -> dict[str, Any]:
+    """Purga por retención (LFPDPPP): elimina facts `expediente.*` de leads sin
+    actividad por más de EXPEDIENTE_RETENTION_DAYS (default 90). Diaria, 03:00."""
+    try:
+        from app.lead_memory.expediente import purge_expired_expedientes
+        resultado = purge_expired_expedientes()
+        log.info("[BEAT_EXPEDIENTE_PURGA] %s", resultado)
+        return resultado
+    except Exception as exc:
+        log.error("[BEAT_EXPEDIENTE_PURGA] Error: %s", exc)
+        raise self.retry(exc=exc, countdown=300)

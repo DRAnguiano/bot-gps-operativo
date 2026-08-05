@@ -23,6 +23,7 @@ def asked_field_keys_for_guard(facts: dict[str, Any]) -> list[str]:
     """Devuelve las asked_field_keys canónicas del campo que el guard preguntaría.
 
     Mismo orden y predicados que ``next_question_from_missing_facts``:
+    - ``candidate.name`` faltante                         → ``["candidate.name"]``
     - ``candidate.city`` faltante                         → ``["candidate.city"]``
     - ``candidate.age`` faltante                          → ``["candidate.age"]``
     - ``experience.vehicle_type`` faltante                → ``["experience.vehicle_type"]``
@@ -33,6 +34,8 @@ def asked_field_keys_for_guard(facts: dict[str, Any]) -> list[str]:
     - documento laboral faltante                          → ``["documents.proof"]``
     - perfil completo / descarte por edad                 → ``[]``
     """
+    if not facts.get("candidate.name"):
+        return ["candidate.name"]
     if not facts.get("candidate.city"):
         return ["candidate.city"]
     if not facts.get("candidate.age"):

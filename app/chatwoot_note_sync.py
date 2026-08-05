@@ -6,7 +6,7 @@ import httpx
 from .db import get_conn
 from .knowledge.business_route_schema import VALID_VEHICLE_TYPES
 from .knowledge.current_turn import is_valid_expiration_text, profile_funnel_complete
-from .knowledge.geo_utils import is_zm_laguna_canonical
+from .knowledge.geo_utils import is_zm_laguna_canonical, normalize_zm_laguna_city
 from .knowledge.text_normalizer import normalize_text
 
 PENDING_TEXT = "Pendiente"
@@ -38,6 +38,7 @@ OFFICIAL_LABELS: frozenset[str] = frozenset({
     "cecati_sugerido",
     "considerar_escuelita_transmontes",
     "considerar_operador_b1",
+    "descartado_edad",
     "documentos",
     "falta_apto",
     "falta_ciudad",
@@ -45,10 +46,12 @@ OFFICIAL_LABELS: frozenset[str] = frozenset({
     "falta_licencia",
     "falta_unidad",
     "foraneo",
+    "insistencia",
     "jerga_ambigua",
     "llamada_pendiente",
     "local_laguna",
-    "objetivo_full_sencillo",
+    "objetivo_full",
+    "objetivo_sencillo",
     "perfil_listo",
     "reingreso_verificar",
     "requiere_agente",
@@ -67,6 +70,7 @@ TERMINAL_LABELS: frozenset[str] = frozenset({
     "requiere_revision_ch",
     "riesgo_alto",
     "reingreso_verificar",
+    "descartado_edad",
 })
 
 # Aliases fantasma → label oficial. La vista SQL `v_rh_work_queue.suggested_chatwoot_labels`
@@ -88,7 +92,8 @@ _LABEL_DISPLAY: dict[str, str] = {
     "considerar_escuelita_transmontes": "Considerar Escuelita Transmontes",
     "considerar_operador_b1":           "Considerar operador B1 (EUA)",
     "llamada_pendiente":                "Llamada pendiente",
-    "objetivo_full_sencillo":           "Objetivo full/sencillo",
+    "objetivo_full":                    "Objetivo full",
+    "objetivo_sencillo":                "Objetivo sencillo",
     "perfil_listo":                     "Perfil listo",
     "requiere_agente":                  "Requiere agente",
     "requiere_revision_ch":             "Requiere revisión CH",
@@ -108,6 +113,8 @@ _LABEL_DISPLAY: dict[str, str] = {
     "seguimiento":                      "Seguimiento",
     "urgente":                          "Urgente",
     "bot_activo":                       "Bot activo",
+    "insistencia":                      "Insistencia",
+    "descartado_edad":                  "Descartado por edad",
 }
 
 
@@ -298,12 +305,27 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
     labels = {"bot_activo"}
 
     if _age_disqualified(facts):
-        return []
+        # Descarte por edad: label terminal (antes cerraba sin label alguno).
+        return ["descartado_edad"]
 
     if lead.get("requires_human"):
         labels.update({"requiere_agente", "requiere_revision_ch"})
     if (lead.get("risk_level") or "").lower() == "high":
         labels.add("riesgo_alto")
+
+    # Bloque 4/5: pausa por insistencia sostenida activa → label para Capital Humano.
+    # Se lee de facts (funnel.paused_until, ISO UTC); no requiere llamada extra.
+    _paused_until = str(facts.get("funnel.paused_until") or "").strip()
+    if _paused_until:
+        try:
+            import datetime as _dt
+            _pu = _dt.datetime.fromisoformat(_paused_until)
+            if _pu.tzinfo is None:
+                _pu = _pu.replace(tzinfo=_dt.timezone.utc)
+            if _pu > _dt.datetime.now(_dt.timezone.utc):
+                labels.add("insistencia")
+        except ValueError:
+            pass
 
     has_license    = bool(facts.get("license.category"))
     # has_medical: vigente explícito O tiene texto de vencimiento (incluye "al mismo tiempo...")
@@ -341,7 +363,10 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
 
     # Tricotomía mutuamente excluyente: objetivo > no-objetivo > sin experiencia.
     if vehicle_confirmed:
-        labels.add("objetivo_full_sencillo")
+        # Label separado por unidad (full/sencillo); cualquiera de los dos completa
+        # el campo de unidad para perfil_listo. Se decide por el fact confirmado.
+        _vt = normalize_text(str(facts.get("experience.vehicle_type") or ""))
+        labels.add("objetivo_sencillo" if "sencillo" in _vt else "objetivo_full")
     elif has_non_target_experience:
         labels.update({"considerar_escuelita_transmontes", "requiere_agente", "requiere_revision_ch"})
     elif has_no_road_experience:
@@ -381,7 +406,10 @@ def calculate_candidate_labels(context: dict[str, Any]) -> list[str]:
     # Usa el catálogo ZML/Comarca (geo_utils) como fuente de verdad.
     city_raw = facts.get("candidate.city") or ""
     if city_raw:
-        if is_zm_laguna_canonical(city_raw):
+        # Resuelve alias del catálogo (p. ej. "Torreón Coahuila", "Cd. Lerdo") antes de
+        # comparar contra el set canónico; sin esto, alias reales del catálogo se
+        # etiquetaban foraneo por error (bug encontrado en auditoría 2026-07-06).
+        if is_zm_laguna_canonical(normalize_zm_laguna_city(city_raw)):
             labels.add("local_laguna")
         else:
             labels.update({"foraneo", "validar_traslado"})
@@ -480,6 +508,39 @@ def _nota_header(scenario: str) -> str:
     return f"🤖 Nota IA: {scenario}"
 
 
+def _documentos_expediente_block(facts: dict[str, Any]) -> str:
+    """Sección '📄 Documentos (expediente)' — checklist de 10 renglones desde el
+    registro (facts expediente.* + declaraciones derivadas). Pendientes compactados
+    en una línea; discrepancias con ⚠️. Termina en doble salto (patrón de bloques)."""
+    from app.lead_memory.expediente import expediente_snapshot
+
+    rows = expediente_snapshot(facts)
+    _status_display = {
+        "declarado": "declarado — falta enviar",
+        "recibido": "recibido ✓",
+        "analizado": "analizado ✓",
+        "ilegible": "recibido · ilegible, pedir re-toma",
+    }
+    lines: list[str] = []
+    pendientes: list[str] = []
+    discrepancias: list[str] = []
+    for row in rows:
+        status = row["status"]
+        if status == "pendiente":
+            pendientes.append(row["display"])
+            continue
+        line = f"{row['display']}: {_status_display.get(status, status)}"
+        if row["dato"]:
+            line += f" · {row['dato']}"
+        lines.append(line)
+        if row["discrepancia"]:
+            discrepancias.append(f"⚠️ {row['display']}: {row['discrepancia']}")
+    if pendientes:
+        lines.append("Pendientes: " + " · ".join(pendientes))
+    lines.extend(discrepancias)
+    return "📄 Documentos (expediente)\n" + "\n".join(lines) + "\n\n"
+
+
 def _nota_contacto(lead: dict[str, Any], facts: dict[str, Any] | None = None) -> str:
     # Nombre solo desde facts['candidate.name']; nunca desde Telegram/WhatsApp display_name
     name_val = (facts or {}).get("candidate.name") or "No disponible"
@@ -525,7 +586,7 @@ def _next_action_dinamica(facts: dict[str, str], is_local: bool, labels: list[st
     return "Validar traslado, documentos y continuidad del proceso."
 
 
-def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_last_message: str | None = None, channel_label: str | None = None) -> str:
+def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_last_message: str | None = None, channel_label: str | None = None, current_risk_level: str | None = None) -> str:
     lead = context.get("lead") or {}
     conversation = context.get("conversation") or {}
     facts = context.get("facts") or {}
@@ -578,7 +639,15 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
 
     requires_human_bool = bool(lead.get("requires_human"))
     requiere_agente = "Sí" if requires_human_bool else "No"
-    riesgo_alto = "riesgo_alto" in lbl
+    # La NOTA de riesgo refleja el TURNO actual, no el risk_level pegado del lead
+    # (conv 178: un falso positivo dejó al lead en high y 3 turnos low siguieron
+    # emitiendo nota de riesgo). El label riesgo_alto de la conversación sí queda
+    # como marca histórica. Sin señal del turno (callers legacy), se conserva el
+    # comportamiento por label.
+    if current_risk_level is not None:
+        riesgo_alto = current_risk_level.lower() == "high"
+    else:
+        riesgo_alto = "riesgo_alto" in lbl
 
     # 📞 Llamada (mantener si solicitó llamada)
     llamada_block = ""
@@ -675,8 +744,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             "Conversación con señal de riesgo detectada. Requiere revisión humana.\n\n"
             "👥 Para Capital Humano\n"
             "Revisar historial de mensajes y determinar continuidad del proceso.\n"
-            "Requiere Agente: Sí\n"
-            "⚠️ Riesgo: Alto\n\n"
+            "Requiere Agente: Sí\n\n"
             "⏭️ Siguiente acción\n"
             "Revisar conversación completa antes de continuar."
         )
@@ -726,6 +794,11 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             f"{_next_action_dinamica(facts, is_local, lbl)}"
         )
 
+    # 📄 Documentos del expediente (document-expediente-vision-v2 B1): checklist
+    # derivado del registro (facts expediente.*) — nunca del texto libre del LLM.
+    # Pendientes compactados en una línea para no inflar la nota.
+    documentos_block = _documentos_expediente_block(facts)
+
     # 4.3 Perfil listo local / 4.4 Perfil listo foráneo
     if nucleo_completo:
         doc_display = "Cartas laborales o semanas cotizadas del IMSS" if is_local else "2 cartas laborales membretadas"
@@ -746,6 +819,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
             f"Apto médico: {_apto_status_display(medical_status_raw, apto_exp_text)}" + (f" · {_exp_display(apto_exp_text)}" if apto_exp_text else "") + "\n"
             f"Documento laboral: {doc_display}\n"
             f"{traslado_line}\n"
+            + documentos_block
             + llamada_block +
             "👥 Para Capital Humano\n"
             "Validar documentos y continuar proceso de contratación.\n"
@@ -813,6 +887,7 @@ def render_candidate_note(context: dict[str, Any], labels: list[str], fallback_l
         f"{estado}\n\n"
         + sabemos_block
         + falta_block
+        + documentos_block
         + llamada_block
         + "👥 Para Capital Humano\n"
         "Esperar a que el candidato complete su perfil.\n"
@@ -839,13 +914,13 @@ async def _chatwoot_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
         return response.json()
 
 
-async def sync_chatwoot_candidate_note(*, lead_key: str, account_id: int | str, conversation_id: int | str, fallback_last_message: str | None = None, channel_label: str | None = None) -> dict[str, Any]:
+async def sync_chatwoot_candidate_note(*, lead_key: str, account_id: int | str, conversation_id: int | str, fallback_last_message: str | None = None, channel_label: str | None = None, current_risk_level: str | None = None) -> dict[str, Any]:
     context = get_lead_note_context(lead_key)
     if not context.get("lead"):
         return {"ok": False, "skipped": True, "reason": "lead_not_found", "lead_key": lead_key}
 
     labels = calculate_candidate_labels(context)
-    note = render_candidate_note(context, labels, fallback_last_message=fallback_last_message, channel_label=channel_label)
+    note = render_candidate_note(context, labels, fallback_last_message=fallback_last_message, channel_label=channel_label, current_risk_level=current_risk_level)
 
     note_response = await _chatwoot_post(
         f"/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages",

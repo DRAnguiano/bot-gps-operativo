@@ -12,8 +12,9 @@ from app.knowledge.current_turn import (
 from app.knowledge.guard_asked_field import asked_field_keys_for_guard
 from app.lead_memory.profile_extractor import extract_profile_facts_as_dict as facts
 from app.chatwoot_note_sync import calculate_candidate_labels, render_candidate_note
+from app.settings import AGE_DISQUALIFICATION_LIMIT
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 
 def _ctx(f):
@@ -21,16 +22,24 @@ def _ctx(f):
 
 
 def test_funnel_order_city_then_age_then_unit_then_license_then_apto_then_years_then_docs():
-    assert "ciudad" in next_question_from_missing_facts({}).lower()
+    assert "nombre" in next_question_from_missing_facts({}).lower()
 
-    q = next_question_from_missing_facts({"candidate.city": "Torreon"})
+    q = next_question_from_missing_facts({"candidate.name": "Juan Pérez"})
+    assert "ciudad" in q.lower()
+
+    q = next_question_from_missing_facts({"candidate.name": "Juan Pérez", "candidate.city": "Torreon"})
     assert "edad" in q.lower() or "años tiene" in q.lower()
-    assert asked_field_keys_for_guard({"candidate.city": "Torreon"}) == ["candidate.age"]
+    assert asked_field_keys_for_guard(
+        {"candidate.name": "Juan Pérez", "candidate.city": "Torreon"}
+    ) == ["candidate.age"]
 
-    q = next_question_from_missing_facts({"candidate.city": "Torreon", "candidate.age": "45"})
+    q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez", "candidate.city": "Torreon", "candidate.age": "45",
+    })
     assert "tracto full" in q.lower() and "sencillo" in q.lower()
 
     q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -39,6 +48,7 @@ def test_funnel_order_city_then_age_then_unit_then_license_then_apto_then_years_
     assert "vence" in q.lower()
 
     q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -49,6 +59,7 @@ def test_funnel_order_city_then_age_then_unit_then_license_then_apto_then_years_
     assert "vence" in q.lower()
 
     q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -59,6 +70,7 @@ def test_funnel_order_city_then_age_then_unit_then_license_then_apto_then_years_
     assert "años de experiencia" in q.lower()
 
     q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -92,10 +104,14 @@ def test_age_disqualified_reply_is_non_empty():
 
 
 def test_age_under_limit_continues():
-    q = next_question_from_missing_facts({"candidate.city": "Torreon", "candidate.age": "56"})
+    under_limit = AGE_DISQUALIFICATION_LIMIT - 1
+    q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez", "candidate.city": "Torreon", "candidate.age": str(under_limit),
+    })
     assert "tracto full" in q.lower()
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY — profile_extractor usa LLM T=0")
 def test_expiration_extraction_relative_and_date():
     d = facts("mi licencia vence el 31 de diciembre de 2027")
@@ -107,6 +123,7 @@ def test_expiration_extraction_relative_and_date():
 
 def test_vigente_without_expiration_reprompts_time():
     q = next_question_from_missing_facts({
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -118,27 +135,31 @@ def test_vigente_without_expiration_reprompts_time():
 
 def test_short_expiry_triggers_fixed_renewal_branch():
     base = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
         "license.category": "E",
         "license.expiration_text": "vence en 18 días",
     }
-    assert "papel" in next_question_from_missing_facts(base).lower()
+    # Vencimiento próximo → ofrece la alternativa de comprobante de pago (Bloque 2).
+    assert "comprobante de pago" in next_question_from_missing_facts(base).lower()
 
     no_paper = {**base, "documents.renewal_proof": "no"}
     q = next_question_from_missing_facts(no_paper)
-    assert "cuando lo tenga" in q.lower()
-    assert "continuamos" in q.lower()
+    assert "en cuanto lo tenga" in q.lower()
+    assert "seguimos" in q.lower()
 
 
 def test_age_discard_visible_in_note_without_review_labels_or_bot_activo():
-    f = {"candidate.age": "52", "candidate.city": "Torreon"}
+    f = {"candidate.age": str(AGE_DISQUALIFICATION_LIMIT), "candidate.city": "Torreon"}
     labels = calculate_candidate_labels(_ctx(f))
     assert "bot_activo" not in labels
     assert "requiere_revision_ch" not in labels
+    # Descarte por edad SHALL tener rastro de label (Bloque 5): descartado_edad.
+    assert labels == ["descartado_edad"]
     note = render_candidate_note(_ctx(f), labels)
-    assert "Edad fuera de perfil" in note
+    assert "Fuera de Perfil por Edad" in note
 
 
 # ── Task 1.1: "todo en regla / todo bien" NO confirma vigencia ────────────────
@@ -162,6 +183,7 @@ def test_todo_bien_no_confirma_vigencia():
     assert "medical.apto_status" not in d
 
 
+@pytest.mark.external_llm
 def test_en_regla_con_licencia_y_fecha_si_confirma():
     # Con dato específico de vigencia el registro SÍ debe ocurrir
     d = facts("licencia tipo E vigente, vence en 1 año")
@@ -186,18 +208,22 @@ def test_semanas_cotizadas_es_semanas_imss():
     assert d.get("documents.proof") == "semanas_imss"
 
 
-def test_sin_cartas_no_persiste_proof():
+def test_sin_cartas_persiste_ninguno_para_ofrecer_alternativa():
+    # Bloque 2 (D3): la negativa SÍ persiste "ninguno" para poder ofrecer la
+    # alternativa (IMSS↔cartas según residencia) — antes no persistía nada.
     d = facts("no tengo cartas")
-    assert d.get("documents.proof") is None
+    assert d.get("documents.proof") == "ninguno"
 
 
 # ── Task 1.3: tramite_comprobante ─────────────────────────────────────────────
 
+@pytest.mark.external_llm
 def test_licencia_vencida_con_comprobante_marca_tramite():
     d = facts("mi licencia está vencida pero tengo comprobante de cita")
     assert d.get("license.tramite_comprobante") == "true", f"got: {d}"
 
 
+@pytest.mark.external_llm
 def test_apto_vencido_con_cita_marca_tramite():
     d = facts("el apto está vencido ya pagué la cita")
     assert d.get("medical.tramite_comprobante") == "true", f"got: {d}"
@@ -213,6 +239,7 @@ def test_vencido_sin_comprobante_no_marca_tramite():
 def test_funnel_skips_already_provided_facts():
     # 2.1: funnel no re-pregunta edad ni unidad ni experiencia ya dadas
     f = {
+        "candidate.name": "Juan Pérez",
         "candidate.age": "35",
         "experience.vehicle_type": "full",
         "experience.years": "10 años",
@@ -227,6 +254,7 @@ def test_funnel_skips_already_provided_facts():
 def test_funnel_licencia_b_ofrece_sencillo():
     # 2.4: con licencia B, la pregunta de unidad debe orientar a sencillo
     f = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "license.category": "B",
@@ -242,6 +270,7 @@ def test_funnel_licencia_b_ofrece_sencillo():
 def test_funnel_licencia_e_ofrece_ambas():
     # 2.4: con licencia E, la pregunta de unidad debe ofrecer full o sencillo
     f = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "license.category": "E",
@@ -256,6 +285,7 @@ def test_funnel_licencia_e_ofrece_ambas():
 def test_funnel_documento_local_acepta_imss():
     # 2.5: candidato local de ZM Laguna — pregunta debe incluir IMSS
     f = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Torreon",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -271,6 +301,7 @@ def test_funnel_documento_local_acepta_imss():
 def test_funnel_documento_foraneo_exige_cartas_membretadas():
     # 2.5: candidato foráneo — pregunta debe exigir cartas membretadas
     f = {
+        "candidate.name": "Juan Pérez",
         "candidate.city": "Monterrey",
         "candidate.age": "45",
         "experience.vehicle_type": "full",
@@ -284,20 +315,96 @@ def test_funnel_documento_foraneo_exige_cartas_membretadas():
     assert "imss" not in q.lower(), f"foráneo no debe mencionar IMSS, got: {q!r}"
 
 
+def test_vehicle_question_with_license_b_targets_sencillo():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "license.category": "B",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "licencia tipo b" in q.lower()
+    assert "sencillo" in q.lower()
+    assert "full" not in q.lower()
+
+
+def test_vehicle_question_with_license_e_mentions_sencillo_and_full():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "license.category": "E",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "licencia tipo e" in q.lower()
+    assert "sencillo" in q.lower()
+    assert "full" in q.lower()
+
+
+def test_license_question_for_full_requires_e():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "experience.vehicle_type": "full",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "tipo e" in q.lower()
+    assert "cuándo vence" in q.lower()
+
+
+def test_license_question_for_sencillo_accepts_b_or_e():
+    f = {
+        "candidate.name": "Juan Pérez",
+        "candidate.city": "Torreón",
+        "candidate.age": "45",
+        "experience.vehicle_type": "sencillo",
+    }
+    q = next_question_from_missing_facts(f)
+    assert "tipo b o e" in q.lower()
+    assert "cuándo vence" in q.lower()
+
+
+def test_document_requirement_note_local():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({"candidate.city": "Torreón"})
+    assert "imss" in note.lower()
+    assert "foraneo" not in note.lower()
+
+
+def test_document_requirement_note_foraneo():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({"candidate.city": "Monterrey"})
+    assert "membretada" in note.lower()
+    assert "imss" not in note.lower()
+
+
+def test_document_requirement_note_unknown_residency_is_conditional():
+    from app.knowledge.current_turn import residency_document_requirement_note
+    note = residency_document_requirement_note({})
+    assert "si es local" in note.lower()
+    assert "si es foráneo" in note.lower()
+
+
 # ── Task 2.3: no re-saludar ni re-preguntar dato ya confirmado ────────────────
 
 def test_greeting_first_time_sends_full_presentation():
-    # 2.3: primera visita — saludo completo con presentación de Mundo
+    # 2.3: primera visita — saludo completo con presentación de Mundo. El nombre es
+    # el primer campo del funnel (antes que ciudad).
     from app.orchestrators.knowledge_orchestrator import _greeting_reply
     reply = _greeting_reply({"facts": []})
     assert "mundo" in reply.lower(), f"primer turno debe incluir 'Mundo': {reply!r}"
-    assert "ciudad" in reply.lower(), f"primer turno debe pedir ciudad: {reply!r}"
+    assert "nombre" in reply.lower(), f"primer turno debe pedir nombre: {reply!r}"
 
 
 def test_greeting_returning_skips_city_if_already_given():
-    # 2.3: candidato con ciudad registrada — vuelta no debe pedir ciudad de nuevo
+    # 2.3: candidato con nombre y ciudad registrados — vuelta no debe re-pedirlos,
+    # pasa al siguiente campo pendiente (edad).
     from app.orchestrators.knowledge_orchestrator import _greeting_reply
-    lead_mem = {"facts": [{"fact_group": "candidate", "fact_key": "city", "fact_value": "Torreon"}]}
+    lead_mem = {"facts": [
+        {"fact_group": "candidate", "fact_key": "name", "fact_value": "Juan Pérez"},
+        {"fact_group": "candidate", "fact_key": "city", "fact_value": "Torreon"},
+    ]}
     reply = _greeting_reply(lead_mem)
     assert "ciudad" not in reply.lower(), f"no debe pedir ciudad: {reply!r}"
     assert "años" in reply.lower(), f"debe pedir edad como siguiente campo: {reply!r}"

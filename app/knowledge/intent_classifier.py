@@ -10,16 +10,14 @@ aislado vía el endpoint /classify.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
-from app.indexer import call_groq_json
+from app.gemini_client import dispatch_json
 from app.knowledge.text_normalizer import normalize_text
 from app.knowledge.geo_utils import normalize_zm_laguna_city
 
-# Modelo del clasificador. Chico por diseño: clasificar a JSON no necesita el 70B.
-# ~10x menos tokens y más rápido. La generación de respuestas sigue en el 70B.
-CLASSIFIER_MODEL = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+# Proveedor único: Gemini (gemini-full-provider-migration 2026-07-07). El modelo
+# vive en gemini_client (GEMINI_MODEL); ya no hay constante de modelo Groq.
 
 # ── Catálogo validado (docs/esquema_perfilamiento_v1.md §8) ──────────────────
 
@@ -88,7 +86,11 @@ INTENTS DE PREGUNTA (van en "questions"):
 - vacancy_question: "¿qué vacantes hay?", info de la vacante de operador.
 - safety_intent: antidoping, sustancias, pruebas. Pon is_admission=true SOLO si el
   candidato ADMITE consumo o un positivo ("salí positivo", "antes consumía"). Si solo
-  pregunta ("¿hacen antidoping?"), is_admission=false.
+  pregunta ("¿hacen antidoping?"), is_admission=false. OJO con coloquialismos: el
+  habla norteña usa expresiones como "se arma", "el show", "deme chance", "está la
+  onda" SIN relación con sustancias — "le mando fotos de mis tractos y todo el show
+  pa que vea que sí se arma" es entusiasmo por demostrar experiencia, NO safety_intent
+  ni admisión. safety_intent exige referencia real a sustancias/alcohol/pruebas.
 
 INTENTS DE SEÑAL (van en "primary_intent"/"secondary_intents", NO generan questions):
 - greeting: saludo. farewell: despedida. on_route: va manejando/ocupado.
@@ -170,6 +172,9 @@ Mensaje: "10-4 voy en ruta al rato le marco"
 
 Mensaje: "antes consumia pero ya cambie"
 {"message_type":"simple","primary_intent":"safety_intent","secondary_intents":[],"answers":[],"questions":[{"intent":"safety_intent","evidence":"antes consumia","is_admission":true}]}
+
+Mensaje: "no tengo eso, pero si kiere le mando fotos de mis tractos y todo el show pa k vea que si se arma"
+{"message_type":"simple","primary_intent":"candidate_answer","secondary_intents":[],"answers":[{"field":"documents.proof","value":"ninguno","evidence":"no tengo eso","confidence":0.85}],"questions":[]}
 
 Mensaje: "tienen vacantes de mecanico?"
 {"message_type":"simple","primary_intent":"out_of_scope","secondary_intents":[],"answers":[],"questions":[]}
@@ -291,7 +296,7 @@ def classify_message(message: str, last_bot_question: str | None = None) -> dict
     else:
         user_content = msg
 
-    raw_json = call_groq_json(user_content, CLASSIFIER_SYSTEM, temperature=0.0, model=CLASSIFIER_MODEL)
+    raw_json = dispatch_json(user_content, CLASSIFIER_SYSTEM, temperature=0.0)
 
     try:
         raw = json.loads(raw_json)

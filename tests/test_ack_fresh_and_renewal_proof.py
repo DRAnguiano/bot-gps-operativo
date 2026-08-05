@@ -29,7 +29,8 @@ from app.knowledge.text_normalizer import normalize_text
 # ---------------------------------------------------------------------------
 
 def test_ack_confirms_only_fresh_fact():
-    """Caller ya filtró: pre_current_facts=solo el dato nuevo (licencia)."""
+    """Caller ya filtró: pre_current_facts=solo el dato nuevo (licencia). Sin eco de
+    datos (feedback 2026-07-03): el ack no repite NINGÚN valor, ni el nuevo ni el previo."""
     saved = {
         "candidate.city": "Torreón",
         "candidate.age": "38",
@@ -41,11 +42,12 @@ def test_ack_confirms_only_fresh_fact():
         "tipo E", merged, "¿Qué tipo de licencia federal tiene?",
         pre_current_facts=fresh,
     )
-    assert "licencia federal tipo E" in reply
-    # No re-confirma datos previos
+    # No re-confirma ningún dato, ni el fresco ni los previos
+    assert "tipo E" not in reply
     assert "Torreón" not in reply
     assert "Edad anotada" not in reply
     assert "tracto full" not in reply
+    assert "?" in reply  # trae la siguiente pregunta del funnel
 
 
 def test_ack_empty_fresh_falls_back_to_generic_prefix():
@@ -70,11 +72,11 @@ def test_two_consecutive_turns_do_not_accumulate():
         return reply
 
     r1 = turn({"candidate.city": "Torreón"}, "Torreón", "¿ciudad?")
-    assert "Torreón" in r1
+    assert "Torreón" not in r1  # sin eco de datos (feedback 2026-07-03)
 
-    # Turno 2: extractor parrotea ciudad + aporta edad. El ack solo confirma edad.
+    # Turno 2: extractor parrotea ciudad + aporta edad. El ack no repite ningún valor.
     r2 = turn({"candidate.city": "Torreón", "candidate.age": "38"}, "38", "¿edad?")
-    assert "Edad anotada" in r2
+    assert "38" not in r2
     assert "Torreón" not in r2  # no se re-confirma ciudad
 
 
@@ -122,7 +124,10 @@ def test_validate_extraction_renewal_alongside_field():
 # Bug 2 — confirmación contextual mapea renovación
 # ---------------------------------------------------------------------------
 
-_RENEWAL_Q = "Su licencia federal vence en menos de 3 meses. ¿Ya tiene el papel o comprobante de renovación?"
+_RENEWAL_Q = (
+    "Para continuar con su licencia federal, como alternativa aceptamos el "
+    "comprobante de pago de su renovación o trámite. ¿Ya cuenta con ese comprobante?"
+)
 
 
 def test_context_confirm_si_renewal():

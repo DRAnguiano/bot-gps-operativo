@@ -37,12 +37,14 @@ NON_CORE_FIELDS = frozenset({"candidate.availability_status"})
 # que `last_asked_field.read_*` y `guard_asked_field`; se persisten en
 # external_metadata.asked_field_keys (mecanismo reutilizado, no duplicado).
 ASKED_FIELD_KEYS: dict[str, list[str]] = {
-    "candidate.city":          ["candidate.city"],
-    "experience.vehicle_type": ["experience.vehicle_type"],
-    "license":                 ["license.type", "license.status"],
-    "medical.apto_status":     ["medical.apto_status"],
-    "experience.years":        ["experience.years"],
-    "documents.proof":         ["documents.proof"],
+    "candidate.name":               ["candidate.name"],
+    "candidate.city":               ["candidate.city"],
+    "candidate.age":                ["candidate.age"],
+    "experience.vehicle_type":      ["experience.vehicle_type"],
+    "license":                      ["license.type", "license.status"],
+    "medical.apto_expiration_text": ["medical.apto_expiration_text"],
+    "experience.years":             ["experience.years"],
+    "documents.proof":              ["documents.proof"],
 }
 
 _CONFIRMATION_QUESTION = (

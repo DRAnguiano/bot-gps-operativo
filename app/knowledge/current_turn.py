@@ -1,31 +1,93 @@
 import datetime
+import json
 import os
+import random
 import re
 from typing import Any
 
 from app.knowledge.business_hours import is_business_hours
 from app.knowledge.text_normalizer import normalize_text
 
+# Conectores breves y VARIADOS para la transición del funnel (sin eco de datos).
+# Desde FUNNEL_LLM_TRANSITIONS son SOLO la degradación determinista (D8): el acuse
+# primario lo genera el LLM situado; el saludo con nombre va aparte.
+_FUNNEL_CONNECTORS: tuple[str, ...] = (
+    "Va.", "Perfecto.", "Listo.", "Muy bien.", "De acuerdo.", "Bien.", "Claro.",
+)
 
 
-def _profile_complete_closing() -> str:
-    """Closing message shown when all profile fields have been collected."""
+def generate_funnel_transition_reply(
+    message: str | None,
+    fresh_facts: dict[str, Any] | None,
+    question: str,
+    fallback: str,
+) -> str:
+    """Acuse + siguiente pregunta del funnel GENERADOS por el LLM situado.
+
+    Feedback usuario 2026-07-09: el conector enlatado ("Va.") + pregunta pegada se
+    siente robótico. Con contexto (mensaje del candidato, datos capturados este
+    turno y el ÚNICO dato faltante) el LLM reconoce lo compartido y redirige al
+    funnel en una sola respuesta natural, sin re-preguntar lo ya dado. La pregunta
+    del funnel sigue siendo deterministra en CONTENIDO (qué dato se pide y en qué
+    orden); el LLM solo la reformula. Gate por env FUNNEL_LLM_TRANSITIONS (default
+    off) para no volver no-deterministas los caminos existentes; ante flag off,
+    fallo del LLM o salida inválida (vacía, sin pregunta, desbordada) degrada al
+    conector enlatado + pregunta literal (D8: enlatado = fallback, nunca primario).
+    """
+    if os.getenv("FUNNEL_LLM_TRANSITIONS", "false").lower() not in {"1", "true", "yes"}:
+        return fallback
+    # Preguntas con contenido ESTRUCTURADO (resumen de datos) se entregan verbatim:
+    # una reescritura "válida" (tiene ?, ≤500 chars) puede perder la lista completa
+    # — pasó en vivo (conv 176: entregó "¿me podría confirmar que los datos son
+    # correctos?" sin ningún dato). La reformulación aplica solo a preguntas atómicas.
+    # Los marcadores son los del builder (SUMMARY_HEADER/SUMMARY_BULLET), no literales
+    # duplicados: cualquier candidato/datos producen el mismo esqueleto estructural.
+    if SUMMARY_HEADER in question or SUMMARY_BULLET in question:
+        return fallback
+    try:
+        from app.gemini_client import dispatch_generation
+        from app.persona_config import SYSTEM_PROMPT
+
+        datos = "; ".join(
+            f"{k}: {v}" for k, v in (fresh_facts or {}).items() if v
+        ) or "(ninguno nuevo)"
+        prompt = (
+            f"El candidato acaba de escribir: «{(message or '').strip()[:400]}».\n"
+            f"Datos que el sistema ya capturó y guardó de ese mensaje: {datos}.\n"
+            f"Único dato que falta pedirle ahora: «{question}»\n"
+            "Redacta la respuesta de Mundo en 1-2 frases: reconoce breve y natural lo que "
+            "compartió (sin repetirle dato por dato, sin eco literal, sin prometer "
+            "contratación ni evaluar si califica) y cierra pidiendo ÚNICAMENTE ese dato "
+            "faltante — puedes reformular la pregunta con naturalidad, pero pide ese mismo "
+            "dato y ningún otro. No vuelvas a preguntar nada que ya haya proporcionado. "
+            "Voz: Mundo habla en PRIMERA PERSONA DEL SINGULAR y trata de usted "
+            "(\"¿Me podría indicar...?\") — nunca plural corporativo (\"indicarnos\", "
+            "\"necesitamos\") ni tuteo."
+        )
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.6, max_tokens=160) or "").strip()
+        if not out or ("?" not in out and "¿" not in out) or len(out) > 500:
+            return fallback
+        return out
+    except Exception:
+        return fallback
+
+
+
+def _profile_complete_closing(facts: dict[str, Any] | None = None) -> str:
+    """Cierre cuando el perfil conversacional está completo. Ligero, sin recordatorios
+    redundantes (feedback usuario 2026-07-03): acusa el avance y pasa al siguiente paso
+    (subir documentos) de forma breve. `facts` permite adaptar el mensaje (etapa visión)."""
     en_horario = is_business_hours()
     msg = (
-        "¡Gracias por completar tu información! Para avanzar en tu proceso, "
-        "te pedimos que vayas subiendo tus documentos: licencia federal, apto médico y cartas laborales. "
-        "Una vez que los verifiquemos y todo esté en orden, nos comunicaremos contigo "
-        "siempre que sigas interesado."
+        "¡Listo! Con esto completamos tu perfil. El siguiente paso es subir tus documentos "
+        "(licencia federal, apto médico y tu comprobante laboral) para validarlos."
     )
     if en_horario:
-        msg += (
-            " Lo dejo registrado para que nuestro equipo pueda contactarte dentro del horario de atención."
-        )
+        msg += " En cuanto los tengamos, nuestro equipo continúa con tu proceso."
     else:
         msg += (
-            " Nuestro horario de atención es de lunes a viernes de 08:00 a 17:30 hrs (centro de México). "
-            "Si gustas, dinos un horario en ese rango para agendarte una llamada, "
-            "y sube tus documentos para que en cuanto arranque el sistema de oficina podamos continuar con tu candidatura."
+            " Puedes subirlos cuando gustes; nuestro horario es de lunes a viernes de 08:00 a "
+            "17:30 hrs (centro de México) y en cuanto arranque el equipo seguimos."
         )
     return msg
 
@@ -71,14 +133,61 @@ def residency_document_question(facts: dict[str, Any]) -> str:
         return "¿Cuenta con cartas laborales o semanas cotizadas del IMSS?"
     return "¿Cuenta con 2 cartas laborales membretadas de sus empleos anteriores?"
 
+
+def residency_document_requirement_note(facts: dict[str, Any]) -> str:
+    """Explicación breve del requisito documental alineada al estado del funnel.
+
+    Cuando la residencia ya es conocida, devuelve solo la política aplicable a ese
+    candidato. Si aún no se conoce, devuelve una explicación condicional que no se
+    contradice con ninguna de las dos ramas.
+    """
+    has_signal = facts.get("location.is_local_laguna") in {"true", "false"} or bool(facts.get("candidate.city"))
+    if has_signal:
+        if residency_is_local(facts):
+            return "Si es local de la ZM Laguna, aceptamos cartas laborales membretadas o semanas cotizadas del IMSS."
+        return "Para candidatos foráneos necesitamos 2 cartas laborales membretadas."
+    return (
+        "Si es local de la ZM Laguna, aceptamos cartas laborales membretadas o semanas cotizadas del IMSS; "
+        "si es foráneo, necesitamos 2 cartas laborales membretadas."
+    )
+
+
+def vehicle_vacancy_question(facts: dict[str, Any]) -> str:
+    """Pregunta de unidad/vacante condicionada por la licencia conocida."""
+    cat = (facts.get("license.category") or "").upper()
+    if cat == "B":
+        return (
+            "Con licencia tipo B revisamos vacantes de operador sencillo. "
+            "¿Tiene experiencia en sencillo?"
+        )
+    if cat == "E":
+        return (
+            "Con licencia tipo E podemos revisar vacantes de sencillo o de full "
+            "(doble articulado). ¿En cuál tiene experiencia?"
+        )
+    return (
+        "Le comento, actualmente tenemos vacantes para operador sencillo y para tracto "
+        "full (doble articulado). ¿En cuál tiene experiencia?"
+    )
+
+
+def license_requirement_question(facts: dict[str, Any]) -> str:
+    """Pregunta de licencia condicionada por el tipo de unidad ya conocido."""
+    vehicle = normalize_text(str(facts.get("experience.vehicle_type") or ""))
+    if vehicle == "full":
+        return "Para vacante de full necesitamos licencia federal tipo E. ¿Cuenta con licencia tipo E y cuándo vence?"
+    if vehicle == "sencillo":
+        return "Para vacante de sencillo puede aplicar con licencia federal tipo B o E. ¿Qué tipo de licencia tiene y cuándo vence?"
+    return "¿Qué tipo de licencia federal tiene y cuándo vence?"
+
 from app.settings import AGE_DISQUALIFICATION_LIMIT as AGE_LIMIT_EXCLUSIVE
 RENEWAL_PROOF_QUESTION = (
-    "Su {documento} vence en menos de 3 meses. ¿Ya tiene el papel o comprobante "
-    "de renovación?"
+    "Para continuar con su {documento}, como alternativa aceptamos el comprobante "
+    "de pago de su renovación o trámite. ¿Ya cuenta con ese comprobante?"
 )
 RENEWAL_PROOF_REQUIRED_REPLY = (
-    "Entiendo. Para continuar necesitamos que tenga el papel o comprobante de "
-    "renovación. Cuando lo tenga, continuamos con su registro."
+    "Entiendo. Para continuar necesitamos el comprobante de pago de su renovación o "
+    "trámite. En cuanto lo tenga, seguimos con su registro."
 )
 
 _NUMBER_WORDS = {
@@ -113,7 +222,7 @@ def is_age_disqualified(facts: dict[str, Any]) -> bool:
 
 
 def age_disqualification_reply(age: int | None = None) -> str:
-    from app.indexer import call_groq_with_system
+    from app.gemini_client import dispatch_generation
     from app.persona_config import SYSTEM_PROMPT
     context = (
         f"El candidato indicó que tiene {age} años. " if age else ""
@@ -122,7 +231,19 @@ def age_disqualification_reply(age: int | None = None) -> str:
         f"{context}Aplica la regla de descalificación por edad del perfil de operador. "
         "Genera únicamente el mensaje de respuesta al candidato."
     )
-    return call_groq_with_system(SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=120)
+    try:
+        out = (dispatch_generation(SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=120) or "").strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    # Degradación determinista (dispatch_generation propaga ante fallo de Gemini):
+    # el candidato SIEMPRE recibe el mensaje de descalificación, nunca un error.
+    return (
+        "Le agradecemos mucho su interés en Transmontes. Por política del perfil de "
+        "operador no podemos continuar con su proceso en esta vacante. Le deseamos "
+        "mucho éxito."
+    )
 
 
 def _number_token_to_int(token: str) -> int | None:
@@ -136,7 +257,9 @@ def _expiry_within_three_months(expiration_text: Any) -> bool:
     t = normalize_text(str(expiration_text or ""))
     if not t:
         return False
-    if any(word in t for word in ("vencido", "vencida", "caducado", "caducada")):
+    # "vencio" cubre "venció/se venció/ya venció" (verbo en pasado, ya vencido); NO
+    # matchea "vence en 2 años" (presente/futuro). "vencido/vencida" cubren el adjetivo.
+    if any(word in t for word in ("vencido", "vencida", "vencio", "caducado", "caducada", "caduco")):
         return True
     m = re.search(
         r"\b(\d{1,2}|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+"
@@ -251,6 +374,33 @@ def canonicalize_proof(value: Any) -> str | None:
     return None
 
 
+# Números en palabras dentro de expresiones de DURACIÓN (uno–doce; las vigencias
+# reales son cortas). Formalidad en resumen/nota: "dos años" → "2 años"
+# (feedback usuario 2026-07-13, conv 178). Solo formato — no interpreta fechas.
+_DURATION_WORD_NUMS = {
+    "un": "1", "una": "1", "uno": "1", "dos": "2", "tres": "3", "cuatro": "4",
+    "cinco": "5", "seis": "6", "siete": "7", "ocho": "8", "nueve": "9",
+    "diez": "10", "once": "11", "doce": "12",
+}
+_DURATION_PATTERN = re.compile(
+    r"\b(un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    r"\s+(años?|mes(?:es)?|semanas?|d[ií]as?)\b",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_duration_digits(value: Any) -> str:
+    """Reemplaza números en palabras por dígitos SOLO dentro del patrón de
+    duración ("dos años" → "2 años"). Fechas ("31 de diciembre de 2027") y
+    textos sin patrón ("vencido") pasan intactos."""
+    text = str(value or "")
+    if not text:
+        return text
+    return _DURATION_PATTERN.sub(
+        lambda m: f"{_DURATION_WORD_NUMS[m.group(1).lower()]} {m.group(2)}", text,
+    )
+
+
 # Detect the topic of the last bot question for context-aware "si" interpretation
 # Señal estructural de pregunta cuantitativa embebida: "cuántas necesita",
 # "cuánto pagan", etc. OR-fallback para cuando TIPC no clasifica has_embedded_question.
@@ -258,6 +408,19 @@ _EMBEDDED_Q_SIGNAL = re.compile(
     r"(?:cuantos?|cuantas?|cuanto\s+es|cuanto\s+queda|cuanto\s+vale)\s+",
     re.IGNORECASE,
 )
+
+# Sustantivos-tema RAG-contestables (pago, rutas, documentos, licencia, apto…).
+# Origen ÚNICO: el orquestador reimporta desde aquí (evita dos listas divergentes).
+BUSINESS_QUESTION_TERMS: tuple[str, ...] = (
+    "pago", "pagan", "sueldo", "salario", "documento", "documentos", "papeles",
+    "requisitos", "licencia", "apto", "ruta", "rutas", "vacante", "vacantes",
+    "antidoping", "prueba", "orina", "base", "bases",
+)
+
+
+def _message_has_any(message: str | None, terms: tuple[str, ...]) -> bool:
+    text = normalize_text(message or "")
+    return any(normalize_text(term) in text for term in terms)
 
 _TOPIC_APTO = re.compile(r"\bapto\b", re.IGNORECASE)
 _TOPIC_LICENSE_VIGENTE = re.compile(
@@ -332,7 +495,13 @@ def _extract_context_confirmation_facts(norm_message: str, last_bot_message: str
     # La negación bloquea cualquier confirmación (incluye "si no, ...").
     is_yes = (strong_yes or soft_yes) and not has_negation
     _asks_renewal = bool(_TOPIC_RENEWAL_PROOF.search(last_bot_message))
-    if not is_yes:
+    _is_summary_prompt = bool(_TOPIC_SUMMARY_CONFIRM.search(last_bot_message))
+    _summary_yes = _is_summary_prompt and not has_negation and (
+        is_yes or _is_summary_affirmation(t) or _llm_summary_affirmation(t)
+    )
+    if _is_summary_prompt:
+        return {"funnel.summary_confirmed": "true"} if _summary_yes else {}
+    if not is_yes and not _summary_yes:
         # Negación corta a la pregunta de comprobante de renovación → "no".
         # (El resto de campos no se infiere desde una negación corta.)
         if _asks_renewal and has_negation:
@@ -348,6 +517,8 @@ def _extract_context_confirmation_facts(norm_message: str, last_bot_message: str
         facts["documents.labor_letters"] = "sí"
     if _asks_renewal:
         facts["documents.renewal_proof"] = "si"
+    # Resumen de confirmación (gemini-natural-recruiter D6): "sí/correcto" al
+    # "¿Es correcto?" confirma los datos registrados y habilita el cierre.
     return facts
 
 
@@ -525,6 +696,35 @@ def has_embedded_business_question(message: str | None, turn_signals=None) -> bo
         return False
 
 
+def has_business_question(message: str | None, turn_signals=None) -> bool:
+    """Detector ÚNICO de pregunta de negocio contestable en el turno.
+
+    (unified-turn-decision-v2-projection, Fase 2 / D5 — raíz del bug #3.)
+
+    Superset de los tres mecanismos que antes decidían por separado y en
+    desacuerdo (auditoría):
+      1. `is_question` — signo `?`/`¿` y aperturas interrogativas.
+      2. sustantivos-tema (`BUSINESS_QUESTION_TERMS`) — lo que usaba el orquestador
+         (`_looks_like_question`).
+      3. `has_embedded_business_question` — señal LLM (`turn_signals`) + regex de
+         cantidad + fallback TIPC — lo que usaba el guard del worker.
+
+    Con esto, guard y orquestador consultan el MISMO detector y coinciden. Cubre el
+    caso "compuesto sin `?` ni término conocido" vía la señal LLM (mecanismo 3) cuando
+    el caller ya la tiene (worker). NUNCA dispara un LLM fresco: sin `turn_signals` es
+    determinista (gate barato para el orquestador).
+    """
+    if not (message or "").strip():
+        return False
+    if is_question(message) or _message_has_any(message, BUSINESS_QUESTION_TERMS):
+        return True
+    if _EMBEDDED_Q_SIGNAL.search(normalize_text(message or "")):
+        return True
+    if turn_signals is not None:
+        return bool(getattr(turn_signals, "has_embedded_question", False))
+    return False
+
+
 def should_prioritize_current_turn(message: str | None, last_bot_message: str | None = None) -> bool:
     """Evita que RAG/memoria pisen una respuesta clara del candidato."""
     if is_question(message) or has_embedded_business_question(message):
@@ -545,22 +745,9 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
     if is_age_disqualified(facts):
         return age_disqualification_reply(_to_int(facts.get("candidate.age")))
     if not facts.get("experience.vehicle_type"):
-        # 2.4: condición por licencia si ya se conoce (B→sencillo, E→ambas)
-        cat = (facts.get("license.category") or "").upper()
-        if cat == "B":
-            return (
-                "Con licencia tipo B la vacante disponible es de sencillo. "
-                "¿Le interesa una vacante de operador sencillo?"
-            )
-        elif cat == "E":
-            return "¿Le interesa una vacante de tracto full o de sencillo?"
-        else:
-            return (
-                "Le comento, actualmente tenemos vacantes para operador de tracto "
-                "full y de sencillo. ¿En cuál tiene experiencia?"
-            )
+        return vehicle_vacancy_question(facts)
     if not facts.get("license.category"):
-        return "¿Qué tipo de licencia federal tiene y cuándo vence?"
+        return license_requirement_question(facts)
     if not is_valid_expiration_text(facts.get("license.expiration_text")):
         return "¿En cuánto tiempo se le vence su licencia federal?"
     renewal_question = _renewal_question_for_short_expiry(facts)
@@ -579,10 +766,114 @@ def _next_funnel_question_or_none(facts: dict[str, Any]) -> str | None:
     return None
 
 
+# Marker del resumen de confirmación: la afirmación del candidato se detecta por
+# confirmación contextual contra este texto en el último mensaje del bot.
+# Cubre las variantes que el PROPIO sistema emite: "¿Así es correcto?" (funnel
+# determinista), "¿son correctos?" (reformulación LLM, visto en vivo conv 176) y el
+# encabezado del resumen ("le confirmo sus datos registrados").
+_TOPIC_SUMMARY_CONFIRM = re.compile(
+    r"es correcto|son correctos|confirmo sus datos", re.IGNORECASE
+)
+
+_SUMMARY_AFFIRMATIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^asi(?:\s+mero)?(?:\s+es)?$"),
+    re.compile(r"^esta\s+bien$"),
+    re.compile(r"^todo\s+(?:bien|correcto)$"),
+    re.compile(r"^correctisimo$"),
+)
+
+_SUMMARY_FIELD_DISPLAY: tuple[tuple[str, str], ...] = (
+    ("candidate.name", "Nombre"),
+    ("candidate.city", "Ciudad"),
+    ("candidate.age", "Edad"),
+    ("experience.vehicle_type", "Unidad"),
+    ("experience.years", "Experiencia"),
+    ("license.category", "Licencia"),
+    ("license.expiration_text", "Vence licencia"),
+    ("medical.apto_expiration_text", "Vence apto médico"),
+    ("documents.proof", "Comprobante laboral"),
+)
+
+
+def summary_confirmed(facts: dict[str, Any]) -> bool:
+    return facts.get("funnel.summary_confirmed") == "true"
+
+
+def _is_summary_affirmation(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(pat.match(t) for pat in _SUMMARY_AFFIRMATIVE_PATTERNS)
+
+
+def _llm_summary_affirmation(text: str) -> bool:
+    t = normalize_text(text or "")
+    if not t:
+        return False
+    tokens = t.split()
+    if len(tokens) > 5:
+        return False
+
+    from app.gemini_client import dispatch_json
+
+    system = (
+        "Clasifica si la respuesta corta del candidato confirma afirmativamente un resumen "
+        "de datos que el bot acaba de preguntar con '¿Es correcto?'. "
+        "Responde SOLO JSON valido con esta forma exacta: "
+        '{"affirmative": true|false}.'
+    )
+    prompt = (
+        "Marca affirmative=true solo si la frase equivale claramente a "
+        "'sí, mis datos están correctos'. "
+        "Marca false si niega, corrige un dato, expresa duda o no confirma.\n"
+        'Ejemplos true: "por su pollo", "of course", "clarines", "todo en orden".\n'
+        'Ejemplos false: "no", "la ciudad esta mal", "mas o menos", "creo que si".\n'
+        f'Respuesta del candidato: "{t}"'
+    )
+    try:
+        raw = dispatch_json(prompt, system, temperature=0.0)
+        data = json.loads(raw or "{}")
+    except Exception:
+        return False
+    return data.get("affirmative") is True
+
+
+# Marcadores estructurales del resumen: fuente ÚNICA compartida entre el builder
+# y el guard anti-reformulación de generate_funnel_transition_reply. Si la
+# redacción del resumen cambia, cambia aquí y el guard sigue viendo lo mismo.
+SUMMARY_HEADER = "¡Listo! Antes de continuar, le confirmo sus datos registrados:"
+SUMMARY_BULLET = "\n· "
+
+
+def build_funnel_summary(facts: dict[str, Any]) -> str:
+    """Resumen determinista de los datos registrados + '¿Es correcto?' (D6).
+
+    Se emite UNA vez al completar el funnel, antes del cierre: red de seguridad para
+    que el candidato corrija errores de transcripción/extracción antes de que el
+    perfil avance a documentos.
+    """
+    _display_val = {"cartas": "cartas laborales", "semanas_imss": "semanas del IMSS"}
+    lines = []
+    for key, label in _SUMMARY_FIELD_DISPLAY:
+        val = facts.get(key)
+        if val:
+            lines.append(f"{SUMMARY_BULLET[1:]}{label}: {_display_val.get(str(val), val)}")
+    return (
+        SUMMARY_HEADER + "\n"
+        + "\n".join(lines)
+        + "\n¿Es correcto? Si algo está mal, dígame el dato y lo corrijo."
+    )
+
+
 def next_question_from_missing_facts(facts: dict[str, Any]) -> str:
-    """Siguiente pregunta del funnel, o el mensaje de cierre si ya no hay pregunta."""
+    """Siguiente pregunta del funnel; al completarse, el RESUMEN de confirmación
+    (una vez) y, ya confirmado, el mensaje de cierre."""
     question = _next_funnel_question_or_none(facts)
-    return question if question is not None else _profile_complete_closing()
+    if question is not None:
+        return question
+    if not summary_confirmed(facts):
+        return build_funnel_summary(facts)
+    return _profile_complete_closing()
 
 
 def profile_funnel_complete(facts: dict[str, Any]) -> bool:
@@ -704,45 +995,35 @@ def build_current_turn_ack(
     if name_just_learned and _fname:
         return _join_ack_and_question(f"Gracias, {_fname}.", next_question_from_missing_facts(facts))
 
-    # Frases de confirmación naturales por tipo de dato (P2-5)
-    confirms = []
-    if current.get("candidate.city"):
-        confirms.append(f"Anotado, {current['candidate.city']}.")
-    if current.get("candidate.age"):
-        confirms.append(f"Edad anotada, continuamos con el proceso.")
-    vt = current.get("experience.vehicle_type")
-    if vt == "sencillo":
-        confirms.append("Entendido, experiencia en camión sencillo.")
-    elif vt == "full":
-        # Solo full confirma tracto full; jerga (quinta rueda/tráiler) nunca
-        # llega aquí como vehicle_type y no debe afirmarse como full.
-        confirms.append("Entendido, operador de tracto full.")
-    if current.get("license.category"):
-        confirms.append(f"Queda anotado: licencia federal tipo {current['license.category']}.")
-    _lic_exp = current.get("license.expiration_text")
-    if _lic_exp and _lic_exp != "vencido" and is_valid_expiration_text(_lic_exp):
-        confirms.append(f"Tomamos nota, licencia vigente ({_lic_exp}).")
-    _apto_exp = current.get("medical.apto_expiration_text")
-    if _apto_exp and _apto_exp != "vencido" and is_valid_expiration_text(_apto_exp):
-        confirms.append(f"Bien, apto médico vigente ({_apto_exp}).")
-    if current.get("medical.apto_status") == "vigente":
-        if not (_apto_exp and is_valid_expiration_text(_apto_exp)):
-            confirms.append("Bien, apto médico vigente.")
-    if current.get("experience.years"):
-        _yrs = current["experience.years"]
-        _yrs_str = str(_yrs).strip() if _yrs else ""
-        if _yrs_str and _yrs_str not in ("None", ""):
-            confirms.append(f"{_yrs_str} años de experiencia, anotado.")
-        else:
-            confirms.append("Experiencia anotada.")
-    if current.get("documents.labor_letters") == "sí" or current.get("documents.proof") in {"cartas", "semanas_imss"}:
-        confirms.append("Listo, documentos anotados.")
-    if current.get("documents.general_status") == "vigente":
-        confirms.append("Documentación vigente, anotado.")
+    # Resumen de confirmación (D6): si el último mensaje fue el resumen y este turno
+    # trae una CORRECCIÓN de dato, re-confirmar SOLO lo corregido (excepción única al
+    # sin-eco: el candidato necesita ver que su corrección quedó).
+    if (
+        last_bot_message
+        and _TOPIC_SUMMARY_CONFIRM.search(last_bot_message)
+        and current
+        and not current.get("funnel.summary_confirmed")
+    ):
+        _labels = dict(_SUMMARY_FIELD_DISPLAY)
+        _fixed = [
+            f"{_labels[k]}: {v}" for k, v in current.items() if k in _labels and v
+        ]
+        if _fixed:
+            return f"Queda corregido — {'; '.join(_fixed)}. ¿Así es correcto?"
 
-    if confirms:
-        prefix = " ".join(confirms)
-    else:
-        prefix = "Gracias, lo dejo registrado."
-
-    return _join_ack_and_question(prefix, next_question_from_missing_facts(facts))
+    # Sin eco de datos (feedback usuario 2026-07-03: se sentía robótico repetir cada
+    # dato). Acuse situado GENERADO (FUNNEL_LLM_TRANSITIONS) con el conector enlatado
+    # + pregunta literal como degradación. El saludo con nombre (arriba) es la única
+    # confirmación con dato. Las respuestas a negativas/absurdos las genera el LLM
+    # aparte (empathetic-funnel D1).
+    _next_q = _next_funnel_question_or_none(facts)
+    if _next_q is not None:
+        _connector = random.choice(_FUNNEL_CONNECTORS)
+        return generate_funnel_transition_reply(
+            message, current, _next_q,
+            fallback=_join_ack_and_question(_connector, _next_q),
+        )
+    # Perfil completo sin confirmar: emite el resumen; confirmado: el cierre.
+    if not summary_confirmed(facts):
+        return build_funnel_summary(facts)
+    return _profile_complete_closing(facts)

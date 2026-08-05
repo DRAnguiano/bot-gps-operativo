@@ -17,7 +17,8 @@ from app.knowledge.normalize_domain_values import normalize_vehicle
 from app.knowledge.domain_catalog import NEEDS_CLARIFICATION, NON_TARGET
 from app.knowledge.business_hours import classify_call_window
 
-_EXTRACTOR_MODEL = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+# Proveedor único: Gemini (gemini-full-provider-migration 2026-07-07). El modelo
+# vive en gemini_client (GEMINI_MODEL); ya no hay constante de modelo Groq.
 
 _PROFILE_EXPIRATION_SYSTEM = """Eres un extractor de datos de reclutamiento.
 Del mensaje, extrae la expresión de vencimiento de un documento (licencia o apto médico).
@@ -115,8 +116,8 @@ def _find_expiration_text(text: str, message: str = "", has_expiry_context: bool
     if not has_expiry_context and not any(h in text for h in _expiry_hints):
         return None
     try:
-        from app.indexer import call_groq_json
-        raw = call_groq_json(message or text, _PROFILE_EXPIRATION_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+        from app.gemini_client import dispatch_json
+        raw = dispatch_json(message or text, _PROFILE_EXPIRATION_SYSTEM, temperature=0.0)
         val = json.loads(raw).get("expiration_text")
         return str(val).strip() if val else None
     except Exception:
@@ -212,8 +213,8 @@ def _extract_city(message: str, text: str) -> dict[str, Any] | None:
         # Con marcador de residencia: LLM primero — ancla al marcador y maneja typos
         # (el catálogo encuentra destinos lejanos como "pa ir a torreon" sin ancla).
         try:
-            from app.indexer import call_groq_json
-            raw = call_groq_json(message, _CITY_FALLBACK_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+            from app.gemini_client import dispatch_json
+            raw = dispatch_json(message, _CITY_FALLBACK_SYSTEM, temperature=0.0)
             city_val = json.loads(raw).get("city")
             if city_val:
                 return _fact("candidate", "city", str(city_val).strip().title(), 0.65)
@@ -266,8 +267,8 @@ def detect_laredo_ambiguity(message: str) -> bool:
 
 def _extract_call_window(message: str) -> str | None:
     try:
-        from app.indexer import call_groq_json
-        raw = call_groq_json(message, _CALL_WINDOW_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+        from app.gemini_client import dispatch_json
+        raw = dispatch_json(message, _CALL_WINDOW_SYSTEM, temperature=0.0)
         val = json.loads(raw).get("call_window")
         return str(val).strip() if val else None
     except Exception:
@@ -416,8 +417,8 @@ def extract_profile_facts(message: str, intent: str | None = None, turn_signals=
     _dur_label: str | None = None
     if turn_signals.experience_context or any(t in text for t in DRIVING_TERMS):
         try:
-            from app.indexer import call_groq_json
-            raw = call_groq_json(message, _PROFILE_EXPERIENCE_YEARS_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+            from app.gemini_client import dispatch_json
+            raw = dispatch_json(message, _PROFILE_EXPERIENCE_YEARS_SYSTEM, temperature=0.0)
             val = json.loads(raw).get("years")
             if val is not None:
                 _dur_label = f"{val} años" if isinstance(val, int) else str(val)
@@ -519,13 +520,13 @@ def extract_profile_facts(message: str, intent: str | None = None, turn_signals=
         upsert("candidate", "age", age_m.group(1), 0.88)
     elif turn_signals.is_ya_reclamo and not has_exp_context:
         try:
-            from app.indexer import call_groq_json
+            from app.gemini_client import dispatch_json
             _AGE_SYS = (
                 "Eres un extractor de datos de reclutamiento. Extrae la edad en años enteros. "
                 "Rango plausible 18-70. Convierte palabras a números. "
                 "Si no hay edad clara, null. Solo JSON: {\"age\": <int 18-70>|null}"
             )
-            raw = call_groq_json(message, _AGE_SYS, temperature=0.0, model=_EXTRACTOR_MODEL)
+            raw = dispatch_json(message, _AGE_SYS, temperature=0.0)
             val = json.loads(raw).get("age")
             if val is not None and 18 <= int(val) <= 75:
                 upsert("candidate", "age", str(int(val)), 0.92)
@@ -548,8 +549,8 @@ def extract_profile_facts(message: str, intent: str | None = None, turn_signals=
     _experience_context = False
     if veh and veh.status == NEEDS_CLARIFICATION and veh.domain:
         try:
-            from app.indexer import call_groq_json
-            raw = call_groq_json(message, _EXPERIENCE_CONTEXT_SYSTEM, temperature=0.0, model=_EXTRACTOR_MODEL)
+            from app.gemini_client import dispatch_json
+            raw = dispatch_json(message, _EXPERIENCE_CONTEXT_SYSTEM, temperature=0.0)
             _experience_context = bool(json.loads(raw).get("experience_context"))
         except Exception:
             pass

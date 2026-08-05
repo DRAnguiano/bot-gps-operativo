@@ -91,7 +91,9 @@ def test_non_objective_experience_marks_escuelita_not_vehicle_type(message):
     assert out.get("explicit_vehicle_type") not in ("full", "sencillo")
 
 
+@pytest.mark.external_llm
 def test_cecati_signal_sets_handoff_without_funnel():
+    # Sin turn_signals inyectado, cae a classify_turn_intent (LLM) para no_road_experience.
     out = KO._apply_business_rule_overrides("no tengo experiencia, quiero aprender", _baseline_contract())
     assert "cecati_sugerido" in (out.get("business_signals") or [])
     assert out["requires_human"] is True

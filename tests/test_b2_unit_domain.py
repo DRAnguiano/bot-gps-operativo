@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import pytest
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 from app.knowledge.current_turn import build_current_turn_ack, next_question_from_missing_facts
 from app.chatwoot_note_sync import render_candidate_note, calculate_candidate_labels
@@ -57,9 +57,10 @@ def test_funnel_no_pregunta_vehicle_type_si_ya_esta():
 # ── ack visible al candidato ──────────────────────────────────────────────────
 
 def test_ack_sencillo_no_escuelita():
+    # Sin eco de datos (feedback 2026-07-03): el ack no repite "sencillo"; solo
+    # importa que no derive a escuelita.
     reply = build_current_turn_ack("manejo sencillo")
     assert "escuelita" not in reply.lower()
-    assert "sencillo" in reply.lower()
 
 
 def test_ack_sencillo_no_quinta_rueda_full():
@@ -67,9 +68,10 @@ def test_ack_sencillo_no_quinta_rueda_full():
     assert "quinta rueda/full" not in reply.lower()
 
 
-def test_ack_full_menciona_tracto_full():
+def test_ack_full_no_escuelita():
+    # Sin eco de datos: el ack no repite "tracto full"; solo importa que no derive
+    # a escuelita.
     reply = build_current_turn_ack("manejo full")
-    assert "tracto full" in reply.lower()
     assert "escuelita" not in reply.lower()
 
 
@@ -85,6 +87,7 @@ def test_extractor_torton_persiste_non_target_sin_vehicle_type():
     assert "experience.vehicle_type" not in facts
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="road_experience ahora via TIPC — requiere GROQ_API_KEY")
 def test_extractor_sin_experiencia_persiste_road_experience_none():
     facts = extract_profile_facts_as_dict("no tengo experiencia en carretera")
@@ -92,6 +95,8 @@ def test_extractor_sin_experiencia_persiste_road_experience_none():
     assert "experience.vehicle_type" not in facts
 
 
+@pytest.mark.external_llm
+@pytest.mark.skipif(_NO_GROQ, reason="requiere GEMINI_API_KEY — extractor usa LLM")
 def test_extractor_trailer_persiste_vehicle_type_pending():
     facts = extract_profile_facts_as_dict("manejo trailer")
     assert facts["experience.vehicle_type_pending"] == "trailer"

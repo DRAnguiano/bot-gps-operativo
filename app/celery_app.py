@@ -42,6 +42,12 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/5"),
             "options": {"queue": "inbound"},
         },
+        # Purga de expedientes por retención (LFPDPPP, expediente B2) — diaria 03:00
+        "purgar-expedientes-retencion": {
+            "task": "expediente.purga_retencion",
+            "schedule": crontab(hour="3", minute="0"),
+            "options": {"queue": "inbound"},
+        },
     },
     # El beat guarda su estado en Redis para sobrevivir reinicios
     beat_scheduler="celery.beat:PersistentScheduler",

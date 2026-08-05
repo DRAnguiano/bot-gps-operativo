@@ -82,9 +82,10 @@ def test_si_con_contexto_apto():
 
 # ── Integración con el clasificador LLM (omitido si no hay GROQ_API_KEY) ───────
 
-_NO_GROQ = not os.getenv("GROQ_API_KEY")
+_NO_GROQ = not os.getenv("GEMINI_API_KEY")  # Gemini es el proveedor único
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY (test de integración del clasificador)")
 def test_faltas_ortografia_pay_question():
     from app.knowledge.intent_classifier import classify_message
@@ -96,6 +97,7 @@ def test_faltas_ortografia_pay_question():
     assert not c.get("answers")  # no se guardan facts
 
 
+@pytest.mark.external_llm
 @pytest.mark.skipif(_NO_GROQ, reason="requiere GROQ_API_KEY (test de integración del clasificador)")
 def test_roleplay_ignorado_detecta_pay_question():
     from app.knowledge.intent_classifier import classify_message

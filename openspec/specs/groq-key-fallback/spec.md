@@ -51,3 +51,19 @@ llamada es reintentada con la clave de respaldo, indicando qué función origin�
 - **THEN** se imprime `[groq-fallback] cuota primaria agotada, usando BACKUP — <función>`
   antes de realizar el reintento
 
+
+### Requirement: Presupuesto de historial en llamadas de respuesta conversacional
+
+Para evitar que el costo por turno crezca con la longitud de la conversación, el sistema SHALL
+limitar el historial de mensajes incluido en el prompt del comentario conversacional
+(`_answer_friendly_message`) a los últimos 4 mensajes (candidato + asistente combinados),
+descartando los más antiguos. El system prompt y el turno actual SHALL conservarse íntegros.
+La persistencia de facts en Postgres NO se ve afectada por este truncado.
+
+> Nota de implementación: el límite es fijo (`messages[-4:]`), no configurable por variable de
+> entorno — una `GROQ_LLM_HISTORY_TURNS` configurable fue explorada pero no se implementó.
+
+#### Scenario: Historial truncado a los últimos 4 mensajes
+- **WHEN** la conversación tiene más de 4 mensajes previos
+- **THEN** el prompt del comentario conversacional solo incluye los últimos 4
+- **AND** los facts del candidato (persistidos en Postgres) no se modifican
